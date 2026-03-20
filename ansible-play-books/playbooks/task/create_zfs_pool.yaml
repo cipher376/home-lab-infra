@@ -1,0 +1,68 @@
+# --- SECTION 4: PRODESK NODE (STORAGE & NFS) ---
+    - name: Check if ZFS pool already exists
+      shell: "zpool list -H -o name | grep -w 'HDD-8Tb'"
+      register: zpool_check
+      failed_when: false
+      changed_when: false
+      when: inventory_hostname == 'prodesk-node-02'
+
+    - name: Wipe existing partitions on 8TB drive
+      # Only run wipefs if the pool IS NOT found and partitions ARE found
+      shell: "wipefs -a /dev/sda"
+      when: 
+        - inventory_hostname == 'prodesk-node-02'
+        - zpool_check.rc != 0
+        - ansible_facts['devices']['sda']['partitions'] | length > 0
+      ignore_errors: yes 
+
+    - name: Ensure ZFS Pool exists on 8TB Drive
+      community.general.zpool:
+        name: "HDD-8Tb"
+        state: present
+        vdevs:
+          - disks:
+              - /dev/sda
+        pool_properties:
+          ashift: "12"
+      when: inventory_hostname == 'prodesk-node-02'
+
+    - name: Create Models Dataset with ML Optimizations
+      community.general.zfs:
+        name: "HDD-8Tb/models"
+        state: present
+        extra_zfs_properties:
+          recordsize: 1M
+          compression: lz4
+          atime: "off"
+          mountpoint: /HDD-8Tb
+      when: inventory_hostname == 'prodesk-node-02'
+
+    - name: Verify ZFS Health for 8TB Pool
+      command: zpool status HDD-8Tb
+      changed_when: false
+      when: inventory_hostname == 'prodesk-node-02'
+
+    - name: Setup Model Registry Directory
+      # Industry Standard: Explicitly set 777 for multi-VM shared access
+      file:
+        path: "{{ model_path }}"
+        state: directory
+        owner: root
+        group: root
+        mode: '0777'
+      when: inventory_hostname == 'prodesk-node-02'
+      
+    - name: Export Model Registry via NFS
+      # lineinfile ensures we don't duplicate lines in /etc/exports
+      lineinfile:
+        path: /etc/exports
+        line: "{{ model_path }} {{ network_range }}(rw,sync,no_subtree_check,no_root_squash)"
+        state: present
+      register: nfs_config
+      when: inventory_hostname == 'prodesk-node-02'
+
+    - name: Apply NFS changes
+      command: exportfs -ra
+      when: 
+        - inventory_hostname == 'prodesk-node-02'
+        - nfs_config.changed

@@ -1,0 +1,51 @@
+- name: "Create Ubuntu 24.04 Cloud-Init Template"
+  hosts: proxmox_nodes
+  become: yes
+  vars:
+    template_id: 9000
+    template_name: "ubuntu-24-template"
+    cloud_img_url: "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img"
+    storage_pool: "local-lvm"
+
+  tasks:
+    - name: Check if Template {{ template_id }} already exists
+      command: "qm status {{ template_id }}"
+      register: template_check
+      failed_when: false
+      changed_when: false
+      delegate_to: prodesk-node-02
+
+    - block:
+        - name: Download Ubuntu 24.04 Cloud Image
+          get_url:
+            url: "{{ cloud_img_url }}"
+            dest: "/tmp/noble-server-cloudimg-amd64.img"
+            mode: '0644'
+
+        - name: Install QEMU Guest Agent into the image (virt-customize)
+          command: "virt-customize -a /tmp/noble-server-cloudimg-amd64.img --install qemu-guest-agent"
+          
+        - name: Create the Template VM shell
+          command: "qm create {{ template_id }} --name {{ template_name }} --memory 2048 --net0 virtio,bridge=vmbr0"
+
+        - name: Import the Cloud Image to {{ storage_pool }}
+          command: "qm importdisk {{ template_id }} /tmp/noble-server-cloudimg-amd64.img {{ storage_pool }}"
+
+        - name: Configure VM Hardware and Cloud-Init
+          shell: |
+            qm set {{ template_id }} --scsihw virtio-scsi-pci --scsi0 {{ storage_pool }}:vm-{{ template_id }}-disk-0
+            qm set {{ template_id }} --ide2 {{ storage_pool }}:cloudinit 
+            qm set {{ template_id }} --boot c --bootdisk scsi0
+            qm set {{ template_id }} --serial0 socket --vga serial0 
+            qm set {{ template_id }} --agent enabled=1
+
+        - name: Convert VM to Proxmox Template
+          command: "qm template {{ template_id }}"
+
+        - name: Cleanup temporary image file
+          file:
+            path: "/tmp/noble-server-cloudimg-amd64.img"
+            state: absent
+
+      when: template_check.rc != 0
+      delegate_to: prodesk-node-02

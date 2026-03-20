@@ -1,0 +1,11 @@
+# Ignore the vault password file
+.vault_pass
+.vault_pass*
+.vault_key
+setup_terraform_env.sh
+# Ignore temporary retry files
+*.retry
+
+# Ignore terraform state (we will move this to GitLab later)
+.terraform/
+terraform.tfstate*

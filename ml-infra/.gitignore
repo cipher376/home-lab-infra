@@ -1,0 +1,5 @@
+.vault_key
+*.bak
+.terraform/*
+.terraform.lock.hcl
+setup_terraform_env.sh

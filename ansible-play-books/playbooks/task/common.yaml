@@ -1,0 +1,14 @@
+# --- SECTION 1: COMMON CONFIGURATION (All Nodes) ---
+    - name: Install essential infrastructure tools
+      apt:
+        name: 
+          - libguestfs-tools
+          - nfs-kernel-server
+          - qemu-guest-agent
+        state: present
+        update_cache: yes
+
+    - name: Enable Cloud-Init Snippets on local storage
+      # We use 'pvesm set' to ensure the 'local' directory can host our Terraform yaml files
+      command: pvesm set local --content backup,iso,vztmpl,snippets
+      changed_when: false

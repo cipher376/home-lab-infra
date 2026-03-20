@@ -1,0 +1,24 @@
+---
+- name: "Bootstrap Proxmox Cluster: Hardware & Storage Readiness"
+  hosts: proxmox_nodes
+  become: yes
+  vars:
+    # Industry Standard: Define variables for easy updates
+    network_range: "172.16.0.0/24"
+    model_path: "/HDD-8Tb/models"
+    gpu_id: "0000:01:00.0"
+  
+  vars_files:
+    - ../vars/secrets.yaml  
+
+  tasks:
+    - include_tasks: task/common.yaml
+    - include_tasks: task/create_zfs_pool.yaml
+    - include_tasks: task/gpu_passthrough.yaml
+    - include_tasks: task/iam.yaml    
+  
+   
+   
+
+    
+    
