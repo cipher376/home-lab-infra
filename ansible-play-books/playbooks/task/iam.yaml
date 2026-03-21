@@ -1,19 +1,36 @@
-
 # --- SECTION 5: IDENTITY & ACCESS MANAGEMENT (IAM) ---
-    - name: Ensure Terraform Role and User Exist
+    - name: Ensure Terraform Role and User are Up-to-Date
       shell: |
-        pveum role add TerraformAdmin -privs "VM.Allocate VM.Clone VM.Config.CDROM VM.Config.CPU VM.Config.Cloudinit VM.Config.Disk VM.Config.HWType VM.Config.Memory VM.Config.Network VM.Config.Options VM.Audit VM.PowerMgmt VM.Migrate Datastore.AllocateSpace Datastore.Audit Sys.Audit Sys.Console Mapping.Use SDN.Use Datastore.Allocate" || true
-        pveum user add {{ proxmox_api_user }}@{{ proxmox_api_realm }} --comment "Terraform Automation User" || true
+        # Define the required privileges
+        PRIVS="VM.Allocate VM.Clone VM.Config.CDROM VM.Config.CPU VM.Config.Cloudinit \
+        VM.Config.Disk VM.Config.HWType VM.Config.Memory VM.Config.Network VM.Config.Options \
+        VM.Audit VM.PowerMgmt VM.Migrate Datastore.AllocateSpace Datastore.Audit Sys.Audit \
+        Sys.Console Mapping.Use SDN.Use Datastore.Allocate Datastore.AllocateTemplate"
+
+        # 1. Add or Update the Role
+        if pveum role list | grep -q "TerraformAdmin"; then
+          echo "Updating existing role TerraformAdmin..."
+          pveum role modify TerraformAdmin -privs "$PRIVS"
+        else
+          echo "Creating new role TerraformAdmin..."
+          pveum role add TerraformAdmin -privs "$PRIVS"
+        fi
+
+        # 2. Ensure User exists
+        if ! pveum user list | grep -q "{{ proxmox_api_user }}@{{ proxmox_api_realm }}"; then
+          pveum user add {{ proxmox_api_user }}@{{ proxmox_api_realm }} --comment "Terraform User"
+        fi
+
+        # 3. Bind the Role to the User at the Root level (/)
+        pveum acl modify / -user {{ proxmox_api_user }}@{{ proxmox_api_realm }} -role TerraformAdmin
       run_once: true
       delegate_to: "{{ groups['proxmox_master'][0] }}"
 
-    - name: Clean up old token to ensure fresh secret generation
-      shell: "pveum user token delete {{ proxmox_api_user }}@{{ proxmox_api_realm }} {{ proxmox_api_token_id }} || true"
-      run_once: true
-      delegate_to: "{{ groups['proxmox_master'][0] }}"
-
-    - name: Create API Token for Terraform
-      shell: "pveum user token add {{ proxmox_api_user }}@{{ proxmox_api_realm }} {{ proxmox_api_token_id }} --privsep 0 --output-format json"
+    - name: Create API Token for Terraform (Privsep Disabled)
+      # We delete first to ensure a clean state and catch the new secret
+      shell: |
+        pveum user token delete {{ proxmox_api_user }}@{{ proxmox_api_realm }} {{ proxmox_api_token_id }} || true
+        pveum user token add {{ proxmox_api_user }}@{{ proxmox_api_realm }} {{ proxmox_api_token_id }} --privsep 0 --output-format json
       register: token_output
       run_once: true
       delegate_to: "{{ groups['proxmox_master'][0] }}"
@@ -23,21 +40,26 @@
         pve_secret_uuid: "{{ (token_output.stdout | from_json).value }}"
       run_once: true
 
-    - name: Apply Permissions to User and Token
+    - name: Apply Unified Permissions (Root and SDN)
       shell: |
-        pveum acl modify / -user {{ proxmox_api_user }}@{{ proxmox_api_realm }} -role TerraformAdmin
-        pveum acl modify / -token '{{ proxmox_api_user }}@{{ proxmox_api_realm }}!{{ proxmox_api_token_id }}' -role TerraformAdmin
+        # Grant to the user
+        pveum acl modify / --user {{ proxmox_api_user }}@{{ proxmox_api_realm }} --roles TerraformAdmin
+        # Grant to the specific token
+        pveum acl modify / --token '{{ proxmox_api_user }}@{{ proxmox_api_realm }}!{{ proxmox_api_token_id }}' --roles TerraformAdmin
+        # Explicit SDN grant (the troubleshooting winner)
+        pveum acl modify /sdn/zones/localnetwork --token '{{ proxmox_api_user }}@{{ proxmox_api_realm }}!{{ proxmox_api_token_id }}' --roles TerraformAdmin
       run_once: true
       delegate_to: "{{ groups['proxmox_master'][0] }}"
 
     - name: Create local environment setup script
       delegate_to: localhost
-      become: false  # Runs as your local Fedora user, not root
+      become: false
       copy:
         content: |
           #!/bin/bash
           export TF_VAR_proxmox_api_token_id="{{ proxmox_api_user }}@{{ proxmox_api_realm }}!{{ proxmox_api_token_id }}"
           export TF_VAR_proxmox_api_token_secret="{{ pve_secret_uuid }}"
+          export TF_VAR_proxmox_user="{{ proxmox_api_user }}"
           echo "Terraform environment variables loaded for {{ proxmox_api_user }}"
         dest: "./setup_terraform_env.sh"
         mode: '0700'

@@ -5,47 +5,73 @@
     template_id: 9000
     template_name: "ubuntu-24-template"
     cloud_img_url: "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img"
-    storage_pool: "local-lvm"
+    # MUST be the Proxmox Storage ID, not the Linux path
+    storage_pool: "Cluster-Templates"
 
   tasks:
-    - name: Check if Template {{ template_id }} already exists
+    - name: Check if Template {{ template_id }} exists in cluster
       command: "qm status {{ template_id }}"
       register: template_check
       failed_when: false
       changed_when: false
-      delegate_to: prodesk-node-02
+      run_once: true
 
     - block:
+        - name: Install libguestfs-tools
+          apt:
+            name: libguestfs-tools
+            state: present
+
         - name: Download Ubuntu 24.04 Cloud Image
           get_url:
             url: "{{ cloud_img_url }}"
-            dest: "/tmp/noble-server-cloudimg-amd64.img"
-            mode: '0644'
+            dest: "/tmp/noble-24.04.img"
 
-        - name: Install QEMU Guest Agent into the image (virt-customize)
-          command: "virt-customize -a /tmp/noble-server-cloudimg-amd64.img --install qemu-guest-agent"
+        - name: Patch Image (Install Guest Agent)
+          command: "virt-customize -a /tmp/noble-24.04.img --install qemu-guest-agent"
           
-        - name: Create the Template VM shell
-          command: "qm create {{ template_id }} --name {{ template_name }} --memory 2048 --net0 virtio,bridge=vmbr0"
+        - name: Create VM Shell
+          command: "qm create {{ template_id }} --name {{ template_name }} --net0 virtio,bridge=vmbr0"
+          register: create_vm_output
+          failed_when:
+            - template_check.rc != 0
+            - "'already exists' not in create_vm_output.stderr" 
+          changed_when: "'already exists' not in create_vm_output.stderr" 
 
-        - name: Import the Cloud Image to {{ storage_pool }}
-          command: "qm importdisk {{ template_id }} /tmp/noble-server-cloudimg-amd64.img {{ storage_pool }}"
-
-        - name: Configure VM Hardware and Cloud-Init
+        - name: Import and Set Disk (Fixed for Shared Storage)
           shell: |
-            qm set {{ template_id }} --scsihw virtio-scsi-pci --scsi0 {{ storage_pool }}:vm-{{ template_id }}-disk-0
-            qm set {{ template_id }} --ide2 {{ storage_pool }}:cloudinit 
+            # 1. Clean up old Cloud-Init drive to avoid "already exists" error
+            pvesm free {{ storage_pool }}:{{ template_id }}/vm-{{ template_id }}-cloudinit.qcow2 || true
+    
+            # 2. Import the disk and CAPTURE the output to find the disk name
+            # Proxmox outputs: 'unused0: successfully imported disk 'Storage:9000/vm-9000-disk-1.raw'
+            IMPORT_LOG=$(qm importdisk {{ template_id }} /tmp/noble-24.04.img {{ storage_pool }} --format raw)
+            
+            # 3. Use grep/sed to pull the exact volume name assigned by Proxmox
+            DISK_VOL=$(echo "$IMPORT_LOG" | grep -o "{{ storage_pool }}:[0-9]*/vm-[0-9]*-disk-[0-9]*\.raw" | head -n 1)
+    
+            # 4. Attach the dynamic disk name and configure hardware
+            qm set {{ template_id }} --scsihw virtio-scsi-pci --scsi0 "$DISK_VOL"
+            qm set {{ template_id }} --ide2 {{ storage_pool }}:cloudinit
             qm set {{ template_id }} --boot c --bootdisk scsi0
-            qm set {{ template_id }} --serial0 socket --vga serial0 
-            qm set {{ template_id }} --agent enabled=1
-
-        - name: Convert VM to Proxmox Template
-          command: "qm template {{ template_id }}"
-
-        - name: Cleanup temporary image file
+            qm set {{ template_id }} --serial0 socket --vga serial0
+            qm set {{ template_id }} --agent 1
+    
+            # 5. Only convert to template if it isn't one already
+            if ! qm config {{ template_id }} | grep -q "template: 1"; then
+              qm template {{ template_id }}
+            else
+              echo "VM {{ template_id }} is already a template. Skipping conversion."
+            fi
+          register: import_res
+          changed_when: "'successfully imported' in import_res.stdout"
+            
+        - name: Cleanup temp image
           file:
-            path: "/tmp/noble-server-cloudimg-amd64.img"
+            path: "/tmp/noble-24.04.img"
             state: absent
 
-      when: template_check.rc != 0
+      # Only run on the first node, but since it's on shared storage, everyone gets it.
+      when: template_check.rc != 0 
+      run_once: true
       delegate_to: prodesk-node-02

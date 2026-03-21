@@ -6,6 +6,7 @@
     # Industry Standard: Define variables for easy updates
     network_range: "172.16.0.0/24"
     model_path: "/HDD-8Tb/models"
+    template_path: "/HDD-8Tb/templates"
     gpu_id: "0000:01:00.0"
   
   vars_files:
@@ -13,9 +14,10 @@
 
   tasks:
     - include_tasks: task/common.yaml
+    - include_tasks: task/iam.yaml  
     - include_tasks: task/create_zfs_pool.yaml
-    - include_tasks: task/gpu_passthrough.yaml
-    - include_tasks: task/iam.yaml    
+
+      
   
    
    

@@ -34,13 +34,36 @@
           recordsize: 1M
           compression: lz4
           atime: "off"
-          mountpoint: /HDD-8Tb
+          mountpoint: /HDD-8Tb/models
       when: inventory_hostname == 'prodesk-node-02'
-
+    - name: Create Templates Dataset for vm images and ISOs
+      community.general.zfs:
+        name: "HDD-8Tb/templates"
+        state: present
+        extra_zfs_properties:
+          recordsize: 1M
+          compression: lz4
+          atime: "off"
+          mountpoint: /HDD-8Tb/templates
+      when: inventory_hostname == 'prodesk-node-02'
     - name: Verify ZFS Health for 8TB Pool
       command: zpool status HDD-8Tb
       changed_when: false
       when: inventory_hostname == 'prodesk-node-02'
+    
+    - name: "CRITICAL CLEAN: Remove ZFS Shadow Exports"
+      shell: |
+        # 1. Turn off ZFS-managed sharing to stop it from recreating files
+        zfs set sharenfs=off HDD-8Tb/templates || true
+        zfs set sharenfs=off HDD-8Tb/models || true
+
+        # 2. Delete the offending auto-generated files
+        rm -f /etc/exports.d/zfs.exports
+        rm -f /etc/exports.d/zfs.exports.lock
+      delegate_to: prodesk-node-02
+      register: final_nfs_run
+      failed_when: 
+        - "final_nfs_run.rc != 0"
 
     - name: Setup Model Registry Directory
       # Industry Standard: Explicitly set 777 for multi-VM shared access
@@ -51,18 +74,89 @@
         group: root
         mode: '0777'
       when: inventory_hostname == 'prodesk-node-02'
-      
     - name: Export Model Registry via NFS
       # lineinfile ensures we don't duplicate lines in /etc/exports
       lineinfile:
         path: /etc/exports
         line: "{{ model_path }} {{ network_range }}(rw,sync,no_subtree_check,no_root_squash)"
         state: present
-      register: nfs_config
+      register: model_nfs_config
+      when: inventory_hostname == 'prodesk-node-02'
+    - name: Setup Template Registry Directory
+      # Industry Standard: Explicitly set 777 for multi-VM shared access
+      file:
+        path: "{{ template_path }}"
+        state: directory
+        owner: root
+        group: root
+        mode: '0777'
+      when: inventory_hostname == 'prodesk-node-02'
+      
+    - name: Export Template Registry via NFS
+      # lineinfile ensures we don't duplicate lines in /etc/exports
+      lineinfile:
+        path: /etc/exports
+        line: "{{ template_path }} {{ network_range }}(rw,sync,no_subtree_check,no_root_squash)"
+        state: present
+      register: template_nfs_config
       when: inventory_hostname == 'prodesk-node-02'
 
     - name: Apply NFS changes
       command: exportfs -ra
       when: 
         - inventory_hostname == 'prodesk-node-02'
-        - nfs_config.changed
+        - (model_nfs_config.changed or template_nfs_config.changed)
+    
+    - name: Register NFS Shares Dynamically
+      shell: |
+        # Use the IP from the inventory automatically
+        TARGET_IP="{{ hostvars['prodesk-node-02']['ansible_host'] }}"
+
+        pvesm add nfs Cluster-Templates \
+          --path /mnt/pve/Cluster-Templates \
+          --server $TARGET_IP \
+          --export /HDD-8Tb/templates \
+          --content iso,vztmpl,images || true
+
+        pvesm add nfs Cluster-Models \
+          --path /mnt/pve/Cluster-Models \
+          --server $TARGET_IP \
+          --export /HDD-8Tb/models \
+          --content images || true
+      run_once: true
+      # This tells Ansible to run the command ON the ProDesk node
+      delegate_to: "{{ hostvars['prodesk-node-02']['ansible_host'] }}"
+      register: pve_out
+      # FAIL if any of these strings appear, but ignore the "already exists" message
+      failed_when: 
+        - "'error' in pve_out.stderr.lower()"
+        - "'denied' in pve_out.stderr.lower()"
+        - "'unexpected' in pve_out.stderr.lower()"
+        - "'already exists' not in pve_out.stderr"
+      changed_when: "'already exists' not in pve_out.stderr"
+      vars:
+        ansible_user: root
+
+    - name: Force activation and refresh on all nodes
+      shell: |
+        pvesm set Cluster-Templates --disable 0 || true
+        pvesm set Cluster-Models --disable 0 || true
+        # Kick the status daemon to clear the "?" icons
+        systemctl restart pvestatd
+      tags: refresh
+    
+    - name: Verify Cluster Storage Config
+      command: cat /etc/pve/storage.cfg
+      register: storage_cfg
+      run_once: true
+
+    - name: Show Current Storage Config
+      debug:
+        msg: "{{ storage_cfg.stdout_lines }}"
+
+    - name: Grant Terraform Token Access to New Storage
+      shell: |
+        pveum acl modify /storage/Cluster-Templates --token 'terraform-prov@pve!haivision-manager' --roles TerraformAdmin
+        pveum acl modify /storage/Cluster-Models --token 'terraform-prov@pve!haivision-manager' --roles TerraformAdmin
+      run_once: true
+      delegate_to: prodesk-node-02

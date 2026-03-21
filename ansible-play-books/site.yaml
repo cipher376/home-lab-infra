@@ -1,3 +1,11 @@
 ---
 - import_playbook: playbooks/01-proxmox_bootstrap.yaml
 - import_playbook: playbooks/02-create_ubuntu_templates.yaml
+- import_playbook: playbooks/02-create_ubuntu_templates.yaml
+
+- name: Final local setup
+  hosts: localhost
+  tasks:
+    - name: Remind user to source environment
+      debug:
+        msg: "Setup Complete! Run 'source ./setup_terraform_env.sh' to start using Terraform."

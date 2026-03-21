@@ -7,7 +7,6 @@ variable "proxmox_api_url" {
 variable "proxmox_user" {
   description = "The Proxmox user to authenticate with"
   type        = string
-  default     = "terraform-prov@pve"
 }
 
 

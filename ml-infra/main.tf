@@ -58,7 +58,8 @@ resource "proxmox_virtual_environment_vm" "ml_worker" {
   name = "ml-gpu-worker-legion"
   node_name = "legion-node-01"
   vm_id = 200
-
+  machine = "pc-q35-8.1"
+  bios = "ovmf"
   cpu {
     cores = 12
     type = "host" #Crucial for AVX/ML performance
@@ -88,8 +89,9 @@ resource "proxmox_virtual_environment_vm" "ml_worker" {
   hostpci {
     device = "hostpci0"
     mapping = "Legion-GPU" # Use the name we defined in /etc/pve/mapping/pci.cfg
-    rombar = true 
-    pcie  = true
+    rombar = false # Disable ROM BAR to prevent conflicts and ensure the GPU is fully dedicated to the VM.
+    rom_file = "" 
+    pcie  = true # 
     xvga    = false # Avoid conflicts with Proxmox's VGA emulation, ensuring the GPU is fully dedicated to the VM for optimal performance.
   }
 
@@ -101,6 +103,11 @@ resource "proxmox_virtual_environment_vm" "ml_worker" {
     datastore_id = "local-lvm"
     interface = "scsi0"
     size = 500 # Larger disk for datasets and models
+  }
+  efi_disk {
+    datastore_id = "local-lvm"
+    file_format  = "raw"
+    type   = "4m" # Standard for Proxmox 8
   }
 
 }
