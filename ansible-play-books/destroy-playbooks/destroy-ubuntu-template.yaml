@@ -1,0 +1,81 @@
+- name: "Destroy Ubuntu 24.04 Cloud-Init Template"
+  hosts: proxmox_nodes
+  become: yes
+  vars:
+    template_id: 9000
+    storage_pool: "Cluster-Templates"
+
+  tasks:
+    - name: Check if template {{ template_id }} exists
+      command: "qm status {{ template_id }}"
+      register: template_check
+      failed_when: false
+      changed_when: false
+      run_once: true
+
+    - block:
+        - name: Get template disk list before destruction
+          shell: |
+            qm config {{ template_id }} | grep -E "^(scsi|ide|efidisk|unused)" | awk -F: '{print $2}' | awk '{print $1}'
+          register: template_disks
+          changed_when: false
+
+        - name: Display disks to be removed
+          debug:
+            msg: "Disks to be purged: {{ template_disks.stdout_lines }}"
+
+        - name: Unlock template if locked
+          shell: qm unlock {{ template_id }} || true
+          changed_when: false
+
+        - name: Destroy template VM and all associated disks
+          command: >
+            qm destroy {{ template_id }}
+            --destroy-unreferenced-disks 1
+            --purge 1
+          register: destroy_result
+
+        - name: Remove any leftover disk volumes from storage pool
+          shell: |
+            for vol in $(pvesm list {{ storage_pool }} | grep "vm-{{ template_id }}" | awk '{print $1}'); do
+              echo "Removing $vol"
+              pvesm free "$vol" || true
+            done
+          register: leftover_cleanup
+          changed_when: "'Removing' in leftover_cleanup.stdout"
+
+        - name: Display leftover cleanup results
+          debug:
+            msg: "{{ leftover_cleanup.stdout_lines }}"
+          when: leftover_cleanup.stdout_lines | length > 0
+
+        - name: Remove libguestfs-tools
+          apt:
+            name: libguestfs-tools
+            state: absent
+            purge: yes
+
+        - name: Remove temp cloud image if it still exists
+          file:
+            path: "/tmp/noble-24.04.img"
+            state: absent
+
+        - name: Verify template is gone
+          command: "qm status {{ template_id }}"
+          register: verify_destroy
+          failed_when: verify_destroy.rc == 0
+          changed_when: false
+
+        - name: Confirm destruction
+          debug:
+            msg: "Template {{ template_id }} and all associated disks have been removed"
+
+      when: template_check.rc == 0
+      run_once: true
+      delegate_to: prodesk-node-02
+
+    - name: Skip message if template does not exist
+      debug:
+        msg: "Template {{ template_id }} does not exist, nothing to clean up"
+      when: template_check.rc != 0
+      run_once: true

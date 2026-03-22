@@ -133,22 +133,6 @@ resource "null_resource" "ml_worker_args" {
   }
 }
 
-# resource "null_resource" "ml_worker_machine_type" {
-#   depends_on = [proxmox_virtual_environment_vm.ml_worker]
-
-#   provisioner "remote-exec" {
-#     connection {
-#       type        = "ssh"
-#       host        = "legion-node-01"
-#       user        = "root"
-#     }
-#     inline = [
-#       "qm stop 200 --skiplock || true",
-#       "qm set 200 --machine q35",
-#       "qm set 200 --bios ovmf",
-#     ]
-#   }
-# }
 
 #  3: GitLab & Model Registry (ProDesk)
 resource "proxmox_virtual_environment_file" "gitlab_cloud_config" {
