@@ -5,7 +5,6 @@
     template_id: 9000
     template_name: "ubuntu-24-template"
     cloud_img_url: "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img"
-    # MUST be the Proxmox Storage ID, not the Linux path
     storage_pool: "Cluster-Templates"
 
   tasks:
@@ -29,35 +28,37 @@
 
         - name: Patch Image (Install Guest Agent)
           command: "virt-customize -a /tmp/noble-24.04.img --install qemu-guest-agent"
-          
+
         - name: Create VM Shell
-          command: "qm create {{ template_id }} --name {{ template_name }} --net0 virtio,bridge=vmbr0"
+          command: >
+            qm create {{ template_id }}
+            --name {{ template_name }}
+            --machine q35
+            --bios ovmf
+            --net0 virtio,bridge=vmbr0
           register: create_vm_output
           failed_when:
-            - template_check.rc != 0
-            - "'already exists' not in create_vm_output.stderr" 
-          changed_when: "'already exists' not in create_vm_output.stderr" 
+            - create_vm_output.rc != 0
+            - "'already exists' not in create_vm_output.stderr"
+          changed_when: "'already exists' not in create_vm_output.stderr"
 
         - name: Import and Set Disk (Fixed for Shared Storage)
           shell: |
-            # 1. Clean up old Cloud-Init drive to avoid "already exists" error
             pvesm free {{ storage_pool }}:{{ template_id }}/vm-{{ template_id }}-cloudinit.qcow2 || true
-    
-            # 2. Import the disk and CAPTURE the output to find the disk name
-            # Proxmox outputs: 'unused0: successfully imported disk 'Storage:9000/vm-9000-disk-1.raw'
+
             IMPORT_LOG=$(qm importdisk {{ template_id }} /tmp/noble-24.04.img {{ storage_pool }} --format raw)
-            
-            # 3. Use grep/sed to pull the exact volume name assigned by Proxmox
             DISK_VOL=$(echo "$IMPORT_LOG" | grep -o "{{ storage_pool }}:[0-9]*/vm-[0-9]*-disk-[0-9]*\.raw" | head -n 1)
-    
-            # 4. Attach the dynamic disk name and configure hardware
+
             qm set {{ template_id }} --scsihw virtio-scsi-pci --scsi0 "$DISK_VOL"
+
+            # EFI disk required for OVMF — must be added before template conversion
+            qm set {{ template_id }} --efidisk0 {{ storage_pool }}:0,format=raw,efitype=4m,pre-enrolled-keys=0
+
             qm set {{ template_id }} --ide2 {{ storage_pool }}:cloudinit
             qm set {{ template_id }} --boot c --bootdisk scsi0
             qm set {{ template_id }} --serial0 socket --vga serial0
             qm set {{ template_id }} --agent 1
-    
-            # 5. Only convert to template if it isn't one already
+
             if ! qm config {{ template_id }} | grep -q "template: 1"; then
               qm template {{ template_id }}
             else
@@ -65,13 +66,12 @@
             fi
           register: import_res
           changed_when: "'successfully imported' in import_res.stdout"
-            
+
         - name: Cleanup temp image
           file:
             path: "/tmp/noble-24.04.img"
             state: absent
 
-      # Only run on the first node, but since it's on shared storage, everyone gets it.
-      when: template_check.rc != 0 
+      when: template_check.rc != 0
       run_once: true
       delegate_to: prodesk-node-02

@@ -2,7 +2,7 @@ terraform {
   required_providers {
     proxmox = {
       source = "bpg/proxmox"
-      version = "0.66.0"
+      version = "0.73"
     }
   }
 }
@@ -58,14 +58,22 @@ resource "proxmox_virtual_environment_vm" "ml_worker" {
   name = "ml-gpu-worker-legion"
   node_name = "legion-node-01"
   vm_id = 200
-  machine = "pc-q35-8.1"
+  machine = "q35"
   bios = "ovmf"
+
+ 
+  # kvm_arguments = "-cpu host,+hv-stimer,+hv-runtime,+hv-frequencies,kvm=off,vendor_id=genuineintel"
   cpu {
     cores = 12
     type = "host" #Crucial for AVX/ML performance
+    flags = [
+      "+aes",        # hardware AES-NI — useful for encrypted model storage / TLS
+      "+pdpe1gb",    # 1GB hugepages — can meaningfully help large model inference
+    ]
   }
   memory {
     dedicated =  24576 # 24GB RAM for large models
+    
   }
   clone {
     vm_id = 9000
@@ -90,7 +98,6 @@ resource "proxmox_virtual_environment_vm" "ml_worker" {
     device = "hostpci0"
     mapping = "Legion-GPU" # Use the name we defined in /etc/pve/mapping/pci.cfg
     rombar = false # Disable ROM BAR to prevent conflicts and ensure the GPU is fully dedicated to the VM.
-    rom_file = "" 
     pcie  = true # 
     xvga    = false # Avoid conflicts with Proxmox's VGA emulation, ensuring the GPU is fully dedicated to the VM for optimal performance.
   }
@@ -111,6 +118,37 @@ resource "proxmox_virtual_environment_vm" "ml_worker" {
   }
 
 }
+resource "null_resource" "ml_worker_args" {
+  depends_on = [proxmox_virtual_environment_vm.ml_worker]
+
+  provisioner "remote-exec" {
+    connection {
+      type        = "ssh"
+      host        = "legion-node-01"
+      user        = "root"
+    }
+    inline = [
+      "qm set 200 --args '-cpu host,+hv-stimer,+hv-runtime,+hv-frequencies'"
+    ]
+  }
+}
+
+# resource "null_resource" "ml_worker_machine_type" {
+#   depends_on = [proxmox_virtual_environment_vm.ml_worker]
+
+#   provisioner "remote-exec" {
+#     connection {
+#       type        = "ssh"
+#       host        = "legion-node-01"
+#       user        = "root"
+#     }
+#     inline = [
+#       "qm stop 200 --skiplock || true",
+#       "qm set 200 --machine q35",
+#       "qm set 200 --bios ovmf",
+#     ]
+#   }
+# }
 
 #  3: GitLab & Model Registry (ProDesk)
 resource "proxmox_virtual_environment_file" "gitlab_cloud_config" {
