@@ -1,10 +1,65 @@
 ---
 - name: Reverse Proxmox GPU Passthrough Configuration (Lenovo Legion)
-  hosts: legion_nodes
+  hosts: proxmox_nodes
   become: true
+  vars:
+    mapping_name: "Legion-GPU"
 
   tasks:
+    - name: "Skip play for non-Legion nodes"
+      meta: end_host
+      when: inventory_hostname != 'legion-node-01'
 
+    - name: "Check if mapping {{ mapping_name }} exists"
+      shell: pvesh get /cluster/mapping/pci/{{ mapping_name }} > /dev/null 2>&1
+      register: mapping_check
+      failed_when: false
+      changed_when: false
+
+    - name: "Display current mapping before removal"
+      shell: pvesh get /cluster/mapping/pci/{{ mapping_name }}
+      register: mapping_content
+      changed_when: false
+      when: mapping_check.rc == 0
+
+    - name: "Show current mapping"
+      debug:
+        msg: "{{ mapping_content.stdout_lines }}"
+      when: mapping_check.rc == 0
+
+    - name: "Remove mapping {{ mapping_name }}"
+      shell: pvesh delete /cluster/mapping/pci/{{ mapping_name }}
+      register: mapping_delete
+      changed_when: mapping_delete.rc == 0
+      when: mapping_check.rc == 0
+
+    - name: "Skip message if mapping does not exist"
+      debug:
+        msg: "Mapping {{ mapping_name }} does not exist — nothing to remove"
+      when: mapping_check.rc != 0
+
+    - name: "Verify mapping is removed"
+      shell: |
+        pvesh get /cluster/mapping/pci/{{ mapping_name }} 2>&1 || true
+      register: mapping_verify
+      changed_when: false
+
+    - name: "Assert mapping is gone"
+      assert:
+        that: >
+          'not found' in mapping_verify.stdout or
+          'not found' in mapping_verify.stderr
+        fail_msg: "Mapping {{ mapping_name }} still exists after deletion"
+        success_msg: "Mapping {{ mapping_name }} successfully removed"
+
+    - name: "Show all remaining PCI mappings"
+      shell: pvesh get /cluster/mapping/pci 2>/dev/null || echo "No mappings found"
+      register: remaining_mappings
+      changed_when: false
+
+    - name: "Display remaining mappings"
+      debug:
+        msg: "{{ remaining_mappings.stdout_lines }}"
     - name: 1. Restore default GRUB cmdline (remove IOMMU and passthrough params)
       lineinfile:
         path: /etc/default/grub

@@ -1,202 +1,517 @@
 terraform {
   required_providers {
     proxmox = {
-      source = "bpg/proxmox"
-      version = "0.73"
+      source  = "bpg/proxmox"
+      version = "~> 0.73"
     }
   }
 }
 
 provider "proxmox" {
-  endpoint = var.proxmox_api_url
+  endpoint  = var.proxmox_api_url
   api_token = "${var.proxmox_api_token_id}=${var.proxmox_api_token_secret}"
-  insecure = true
+  insecure  = true
+
+  ssh {
+    agent    = true
+    username = var.proxmox_ssh_user
+  }
 }
 
-# 1. K3s Master (Control Plane) on the Dell venue
+locals {
+  # Template IDs per node — assumed already present locally
+  template_prodesk = 9000
+  template_legion  = 9001
+  template_venue   = 9002
+  k3s_master_ip = split("/", proxmox_virtual_environment_vm.k3s_master.initialization[0].ip_config[0].ipv4[0].address)[0]
+  ml_worker_ip  = split("/", proxmox_virtual_environment_vm.ml_worker.initialization[0].ip_config[0].ipv4[0].address)[0]
+  gitlab_ip     = split("/", proxmox_virtual_environment_vm.gitlab_server.initialization[0].ip_config[0].ipv4[0].address)[0]
+
+}
+
+# ------------------------------------------------------------------ #
+#  VM 100 — K3s Master (venue-node-03)                                 #
+# ------------------------------------------------------------------ #
+
 resource "proxmox_virtual_environment_vm" "k3s_master" {
   name        = "k3s-master-venue"
-  node_name = "venue-node-03"
-  vm_id      = 100
+  node_name   = "venue-node-03"
+  vm_id       = 100
+  description = "K3s control plane node"
+  tags        = sort(["k3s", "master", "ubuntu","venue"])
+  machine     = "q35"
+  bios        = "ovmf"
+  on_boot     = true
+  started     = true
+
   clone {
-    vm_id = 9000 # Your Ubuntu Template ID
-    node_name = "prodesk-node-02" # The node where the template resides
-    full  = true
+    vm_id     = local.template_venue 
+    node_name = "venue-node-03"
+    full      = true
+    retries   = 3
   }
+
   cpu {
-    cores = 2
-    type = "x86-64-v2-AES" # Stable for 4th gen i5
+    cores   = 2
+    sockets = 1
+    type    = "x86-64-v2-AES"
   }
-  memory { 
-    dedicated = 4096 
+
+  memory {
+    dedicated = 5096
+    floating  = 4096
   }
+
+  network_device {
+    bridge   = "vmbr0"
+    model    = "virtio"
+    firewall = false
+  }
+
+  disk {
+    datastore_id = "local-lvm"
+    interface    = "scsi0"
+    size         = 20
+    file_format  = "raw"
+    cache        = "writethrough"
+    discard      = "on"
+    ssd          = true
+  }
+
+  efi_disk {
+    datastore_id      = "local-lvm"
+    file_format       = "raw"
+    type              = "4m"
+    pre_enrolled_keys = false
+  }
+
+  tpm_state {
+    datastore_id = "local-lvm"
+    version      = "v2.0"
+  }
+
+  agent {
+    enabled = true
+    trim    = true
+    type    = "virtio"
+  }
+
+  operating_system {
+    type = "l26"
+  }
+
+  serial_device {
+    device = "socket"
+  }
+
+  vga {
+    type = "serial0"
+  }
+
   initialization {
     datastore_id = "local-lvm"
+
     ip_config {
       ipv4 {
         address = "172.16.0.103/24"
         gateway = "172.16.0.1"
       }
     }
+
     user_account {
-      keys = [var.ssh_public_key]
+      keys     = [var.ssh_public_key]
+      username = "ubuntu"
     }
   }
-  network_device {
-    bridge = "vmbr0"
-  }
-  disk {
-    datastore_id = "local-lvm"
-    interface = "scsi0"
-    size = 20
-  }
 
-}  
-
-# 2. GUP Training Worker on the Legion
-resource "proxmox_virtual_environment_vm" "ml_worker" {
-  name = "ml-gpu-worker-legion"
-  node_name = "legion-node-01"
-  vm_id = 200
-  machine = "q35"
-  bios = "ovmf"
-
- 
-  # kvm_arguments = "-cpu host,+hv-stimer,+hv-runtime,+hv-frequencies,kvm=off,vendor_id=genuineintel"
-  cpu {
-    cores = 12
-    type = "host" #Crucial for AVX/ML performance
-    flags = [
-      "+aes",        # hardware AES-NI — useful for encrypted model storage / TLS
-      "+pdpe1gb",    # 1GB hugepages — can meaningfully help large model inference
+  lifecycle {
+    ignore_changes = [
+      disk,
+      initialization,
+      started,
     ]
   }
-  memory {
-    dedicated =  24576 # 24GB RAM for large models
-    
-  }
+}
+
+# ------------------------------------------------------------------ #
+#  VM 101 — K3s Worker (prodesk-node-02)                                 #
+# ------------------------------------------------------------------ #
+
+resource "proxmox_virtual_environment_vm" "k3s_worker" {
+  name        = "k3s-worker-prodesk"
+  node_name   = "prodesk-node-02"
+  vm_id       = 101
+  description = "K3s worker node"
+  tags        = sort(["k3s", "worker", "ubuntu", "prodesk"])
+  machine     = "q35"
+  bios        = "ovmf"
+  on_boot     = true
+  started     = true
+
   clone {
-    vm_id = 9000
-    node_name = "prodesk-node-02" # The node where the template resides
-    full  = true
+    vm_id     = local.template_venue 
+    node_name = "prodesk-node-02"
+    full      = true
+    retries   = 3
   }
+
+  cpu {
+    cores   = 2
+    sockets = 1
+    type    = "x86-64-v2-AES"
+  }
+
+  memory {
+    dedicated = 6144
+  }
+
+  network_device {
+    bridge   = "vmbr0"
+    model    = "virtio"
+    firewall = false
+  }
+
+  disk {
+    datastore_id = "local-lvm"
+    interface    = "scsi0"
+    size         = 350
+    file_format  = "raw"
+    cache        = "writethrough"
+    discard      = "on"
+    ssd          = true
+  }
+
+  efi_disk {
+    datastore_id      = "local-lvm"
+    file_format       = "raw"
+    type              = "4m"
+    pre_enrolled_keys = false
+  }
+
+  tpm_state {
+    datastore_id = "local-lvm"
+    version      = "v2.0"
+  }
+
+  agent {
+    enabled = true
+    trim    = true
+    type    = "virtio"
+  }
+
+  operating_system {
+    type = "l26"
+  }
+
+  serial_device {
+    device = "socket"
+  }
+
+  vga {
+    type = "serial0"
+  }
+
   initialization {
     datastore_id = "local-lvm"
+
+    ip_config {
+      ipv4 {
+        address = "172.16.0.104/24"
+        gateway = "172.16.0.1"
+      }
+    }
+
+    user_account {
+      keys     = [var.ssh_public_key]
+      username = "ubuntu"
+    }
+  }
+
+  lifecycle {
+    ignore_changes = [
+      disk,
+      initialization,
+      started,
+    ]
+  }
+}
+
+# ------------------------------------------------------------------ #
+#  VM 200 — ML GPU Worker (legion-node-01)                             #
+# ------------------------------------------------------------------ #
+
+resource "proxmox_virtual_environment_vm" "ml_worker" {
+  name        = "ml-gpu-worker-legion"
+  node_name   = "legion-node-01"
+  vm_id       = 200
+  description = "ML GPU worker with GTX 1660 Ti Mobile passthrough"
+  tags        = sort(["ml", "gpu", "ubuntu"])
+  machine     = "q35"
+  bios        = "ovmf"
+  on_boot     = true
+  started     = true
+
+
+  clone {
+    vm_id     = local.template_legion
+    node_name = "legion-node-01"
+    full      = true
+    retries   = 3
+  }
+
+  cpu {
+    cores   = 12
+    sockets = 1
+    type    = "host"
+    flags = [
+      "+aes",
+      "+pdpe1gb",
+    ]
+  }
+
+  memory {
+    dedicated = 28668
+    floating  = 24576
+  }
+
+  hostpci {
+    device  = "hostpci0"
+    mapping = "Legion-GPU"
+    rombar  = false
+    pcie    = true
+    xvga    = false
+  }
+
+  network_device {
+    bridge   = "vmbr0"
+    model    = "virtio"
+    firewall = false
+  }
+
+  disk {
+    datastore_id = "local-lvm"
+    interface    = "scsi0"
+    size         = 500
+    file_format  = "raw"
+    cache        = "writethrough"
+    discard      = "on"
+    ssd          = true
+  }
+
+  efi_disk {
+    datastore_id      = "local-lvm"
+    file_format       = "raw"
+    type              = "4m"
+    pre_enrolled_keys = false
+  }
+
+  tpm_state {
+    datastore_id = "local-lvm"
+    version      = "v2.0"
+  }
+
+  agent {
+    enabled = true
+    trim    = true
+    type    = "virtio"
+  }
+
+  operating_system {
+    type = "l26"
+  }
+
+  serial_device {
+    device = "socket"
+  }
+
+  vga {
+    type = "serial0"
+  }
+
+  initialization {
+    datastore_id = "local-lvm"
+
     ip_config {
       ipv4 {
         address = "172.16.0.101/24"
         gateway = "172.16.0.1"
       }
     }
+
     user_account {
-      keys = [var.ssh_public_key]
+      keys     = [var.ssh_public_key]
+      username = "ubuntu"
     }
   }
 
-  # The NVIDIA Passthrough
-  hostpci {
-    device = "hostpci0"
-    mapping = "Legion-GPU" # Use the name we defined in /etc/pve/mapping/pci.cfg
-    rombar = false # Disable ROM BAR to prevent conflicts and ensure the GPU is fully dedicated to the VM.
-    pcie  = true # 
-    xvga    = false # Avoid conflicts with Proxmox's VGA emulation, ensuring the GPU is fully dedicated to the VM for optimal performance.
-  }
-
-  network_device {
-    bridge = "vmbr0"
-  }
-
-  disk {
-    datastore_id = "local-lvm"
-    interface = "scsi0"
-    size = 500 # Larger disk for datasets and models
-  }
-  efi_disk {
-    datastore_id = "local-lvm"
-    file_format  = "raw"
-    type   = "4m" # Standard for Proxmox 8
-  }
-
-}
-resource "null_resource" "ml_worker_args" {
-  depends_on = [proxmox_virtual_environment_vm.ml_worker]
-
-  provisioner "remote-exec" {
-    connection {
-      type        = "ssh"
-      host        = "legion-node-01"
-      user        = "root"
-    }
-    inline = [
-      "qm set 200 --args '-cpu host,+hv-stimer,+hv-runtime,+hv-frequencies'"
+  lifecycle {
+    ignore_changes = [
+      disk,
+      initialization,
+      started,
     ]
   }
 }
 
+# ------------------------------------------------------------------ #
+#  VM 300 — GitLab Server (prodesk-node-02)                            #
+# ------------------------------------------------------------------ #
 
-#  3: GitLab & Model Registry (ProDesk)
 resource "proxmox_virtual_environment_file" "gitlab_cloud_config" {
-  node_name = "prodesk-node-02"
+  node_name    = "prodesk-node-02"
   content_type = "snippets"
   datastore_id = "local"
+
   source_raw {
-    data = <<EOF
-#cloud-config
-runcmd:
-  - fallocate -l 4G /swapfile
-  - chmod 600 /swapfile
-  - mkswap /swapfile
-  - swapon /swapfile
-  - echo '/swapfile none swap sw 0 0' >> /etc/fstab
-EOF
+    data      = <<-EOF
+      #cloud-config
+      runcmd:
+        - fallocate -l 4G /swapfile
+        - chmod 600 /swapfile
+        - mkswap /swapfile
+        - swapon /swapfile
+        - echo '/swapfile none swap sw 0 0' >> /etc/fstab
+      #cloud-config
+      users:
+        - name: ubuntu
+          groups: sudo
+          shell: /bin/bash
+          sudo: ['ALL=(ALL) NOPASSWD:ALL']
+          ssh_authorized_keys:
+            - ssh-rsa {{ ssh_public_key }} # Your actual public key here
+      EOF
     file_name = "gitlab-config.yaml"
   }
 }
 
-resource "proxmox_virtual_environment_vm"  "gitlab_server" {
-  name = "gitlab-server"
-  node_name = "prodesk-node-02"
-  vm_id = 300
+resource "proxmox_virtual_environment_vm" "gitlab_server" {
+  name        = "gitlab-server"
+  node_name   = "prodesk-node-02"
+  vm_id       = 300
+  description = "GitLab server and model registry"
+  tags        = sort(["gitlab", "ubuntu"])
+  machine     = "q35"
+  bios        = "ovmf"
+  on_boot     = true
+  started     = true
+
+
+  
+
+  clone {
+    vm_id     = local.template_prodesk
+    node_name = "prodesk-node-02"
+    full      = true
+    retries   = 3
+  }
+
+  cpu {
+    cores   = 4
+    sockets = 1
+    type    = "host"
+  }
+
+  memory {
+    dedicated = 8192
+    floating  = 6144
+  }
+
+  network_device {
+    bridge   = "vmbr0"
+    model    = "virtio"
+    firewall = false
+  }
+
+  disk {
+    datastore_id = "local-lvm"
+    interface    = "scsi0"
+    size         = 40
+    file_format  = "raw"
+    cache        = "writethrough"
+    discard      = "on"
+    ssd          = true
+  }
+
+  disk {
+    datastore_id = "Cluster-Models"
+    interface    = "scsi1"
+    size         = 1000
+    file_format  = "raw"
+    cache        = "none"
+  }
+
+  efi_disk {
+    datastore_id      = "local-lvm"
+    file_format       = "raw"
+    type              = "4m"
+    pre_enrolled_keys = false
+  }
+
+  tpm_state {
+    datastore_id = "local-lvm"
+    version      = "v2.0"
+  }
+
+  agent {
+    enabled = true
+    trim    = true
+    type    = "virtio"
+  }
+
+  operating_system {
+    type = "l26"
+  }
+
+  serial_device {
+    device = "socket"
+  }
+
+  vga {
+    type = "serial0"
+  }
 
   initialization {
-    datastore_id = "local-lvm"
-    user_data_file_id = proxmox_virtual_environment_file.gitlab_cloud_config.id
+    datastore_id      = "local-lvm"
+    user_data_file_id = proxmox_virtual_environment_file.gitlab_cloud_config.id  # this line
+
     ip_config {
       ipv4 {
         address = "172.16.0.102/24"
         gateway = "172.16.0.1"
       }
     }
+
     user_account {
-      keys = [var.ssh_public_key]
+      keys     = [var.ssh_public_key]
+      username = "ubuntu"
     }
-    
-  }
-  clone {
-    vm_id = 9000
-    node_name = "prodesk-node-02" # The node where the template resides
-    full  = true
-  }
-  cpu {
-    cores = 4
-  }
-  memory {
-    dedicated = 8192 # 8GB RAM for GitLab
-  }
-  network_device {
-    bridge = "vmbr0"
-  }
-  # Keep the OS on the 512GB NVMe
-  disk {
-    datastore_id = "local-lvm"
-    interface    = "scsi0"
-    size         = 40 
   }
 
-  # Put the Large Data/Models on the 8TB HDD
-  disk {
-    datastore_id = "HDD-8Tb"
-    interface    = "scsi1"
-    size         = 1000 # 1TB for the Model Registry
+  lifecycle {
+    ignore_changes = [
+      disk,
+      initialization,
+      started,
+    ]
   }
+}
+
+
+
+
+
+# ------------------------------------------------------------------ #
+#  OUTPUTS                                                             #
+# ------------------------------------------------------------------ #
+
+output "k3s_master_ip" {
+  value = local.k3s_master_ip
+}
+
+output "ml_worker_ip" {
+  value = local.ml_worker_ip
+}
+
+output "gitlab_ip" {
+  value = local.gitlab_ip
 }

@@ -9,4 +9,4 @@
   tasks:
     - name: Remind user to source environment
       debug:
-        msg: "Setup Complete! Run 'source ./setup_terraform_env.sh' to start using Terraform."
+        msg: "Cleanup Complete! Run 'source ./setup_terraform_env.sh' to reset your Terraform environment."

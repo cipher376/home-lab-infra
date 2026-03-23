@@ -1,0 +1,329 @@
+- name: "Install NVIDIA Drivers and CUDA in ML Worker VM"
+  hosts: worker_vms
+  become: true
+  vars:
+    nvidia_driver: "nvidia-driver-570-server"
+    nvidia_persistenced: true
+
+  tasks:
+
+# ------------------------------------------------------------------ #
+#  SECTION 1 — PRE-FLIGHT CHECKS                                       #
+# ------------------------------------------------------------------ #
+
+    - name: Verify GPU is visible to VM
+      shell: lspci | grep -i nvidia
+      register: gpu_check
+      changed_when: false
+      failed_when: gpu_check.rc != 0
+
+    - name: Display detected GPU
+      debug:
+        msg: "{{ gpu_check.stdout_lines }}"
+
+# ------------------------------------------------------------------ #
+#  SECTION 2 — PREREQUISITES                                           #
+# ------------------------------------------------------------------ #
+
+    - name: Install prerequisites
+      apt:
+        name:
+          - software-properties-common
+          - linux-headers-{{ ansible_kernel }}
+          - build-essential
+          - dkms
+          - pkg-config
+        state: present
+        update_cache: yes
+      register: prereq_install
+      failed_when: false
+
+    - name: Fail if prerequisites could not be installed
+      fail:
+        msg: "Failed to install prerequisites: {{ prereq_install.msg }}"
+      when:
+        - prereq_install.failed is defined
+        - prereq_install.failed
+
+    - name: Enable restricted and multiverse repositories
+      apt_repository:
+        repo: "{{ item }}"
+        state: present
+      loop:
+        - "deb http://archive.ubuntu.com/ubuntu {{ ansible_distribution_release }} restricted"
+        - "deb http://archive.ubuntu.com/ubuntu {{ ansible_distribution_release }}-updates restricted"
+        - "deb http://archive.ubuntu.com/ubuntu {{ ansible_distribution_release }} multiverse"
+        - "deb http://archive.ubuntu.com/ubuntu {{ ansible_distribution_release }}-updates multiverse"
+
+    - name: Update apt cache after adding repos
+      apt:
+        update_cache: yes
+        cache_valid_time: 0
+
+# ------------------------------------------------------------------ #
+#  SECTION 3 — REMOVE CONFLICTING DRIVERS                              #
+# ------------------------------------------------------------------ #
+
+    - name: Remove any conflicting nouveau or existing nvidia packages
+      apt:
+        name:
+          - nvidia-*
+          - libnvidia-*
+          - xserver-xorg-video-nouveau
+        state: absent
+        purge: yes
+      failed_when: false
+
+    - name: Blacklist nouveau inside the VM
+      copy:
+        dest: /etc/modprobe.d/blacklist-nouveau.conf
+        mode: '0644'
+        content: |
+          blacklist nouveau
+          options nouveau modeset=0
+
+    - name: Update initramfs after blacklisting nouveau
+      command: update-initramfs -u -k all
+      register: initramfs_update
+      failed_when: false
+
+    - name: Display initramfs update result
+      debug:
+        msg: "{{ initramfs_update.stdout_lines | default(['no output']) }}"
+
+# ------------------------------------------------------------------ #
+#  SECTION 4 — INSTALL NVIDIA DRIVER                                   #
+# ------------------------------------------------------------------ #
+
+    - name: Install NVIDIA server driver
+      apt:
+        name:
+          - "{{ nvidia_driver }}"
+          - nvidia-utils-570-server
+          - nvidia-cuda-toolkit
+        state: present
+      register: driver_install
+      failed_when: false
+
+    - name: Display driver install result
+      debug:
+        msg:
+          - "changed: {{ driver_install.changed }}"
+          - "failed:  {{ driver_install.failed | default(false) }}"
+
+    - name: Warn if driver install failed
+      debug:
+        msg: >
+          WARNING: NVIDIA driver install reported an error.
+          Will attempt reboot anyway and verify after.
+      when:
+        - driver_install.failed is defined
+        - driver_install.failed
+
+# ------------------------------------------------------------------ #
+#  SECTION 5 — SAFE REBOOT                                             #
+# ------------------------------------------------------------------ #
+
+    - name: Flush handlers before reboot
+      meta: flush_handlers
+
+    - name: Reboot VM to load NVIDIA drivers
+      reboot:
+        msg: "Rebooting to load NVIDIA drivers"
+        reboot_timeout: 300
+        post_reboot_delay: 30
+        connect_timeout: 60
+        test_command: "systemctl is-active sshd"
+      register: reboot_result
+      failed_when: false
+
+    - name: Display reboot result
+      debug:
+        msg: "Reboot completed: {{ reboot_result.rebooted | default(false) }}"
+
+    - name: Wait for VM to come back online
+      wait_for_connection:
+        delay: 15
+        timeout: 300
+        sleep: 10
+        connect_timeout: 30
+
+    - name: Verify VM is back online
+      ping:
+
+# ------------------------------------------------------------------ #
+#  SECTION 6 — POST REBOOT VERIFICATION                                #
+# ------------------------------------------------------------------ #
+
+    - name: Check DKMS status after reboot
+      shell: dkms status | grep nvidia
+      register: dkms_check
+      changed_when: false
+      failed_when: false
+      retries: 3
+      delay: 10
+
+    - name: Display DKMS status
+      debug:
+        msg: "{{ dkms_check.stdout_lines | default(['no dkms output']) }}"
+
+    - name: Warn if DKMS modules not found
+      debug:
+        msg: >
+          WARNING: NVIDIA DKMS modules not found.
+          Driver may not have installed correctly.
+      when: dkms_check.rc != 0
+
+    - name: Check if nvidia module is loaded
+      shell: lsmod | grep nvidia
+      register: nvidia_module
+      changed_when: false
+      failed_when: false
+
+    - name: Display loaded nvidia modules
+      debug:
+        msg: "{{ nvidia_module.stdout_lines | default(['no nvidia modules loaded']) }}"
+
+    - name: Attempt to load nvidia module if not loaded
+      command: modprobe nvidia
+      register: modprobe_result
+      failed_when: false
+      when: nvidia_module.rc != 0
+
+    - name: Verify nvidia-smi works after reboot
+      command: nvidia-smi
+      register: smi_output
+      changed_when: false
+      failed_when: false
+      retries: 3
+      delay: 10
+
+    - name: Display nvidia-smi output
+      debug:
+        msg: "{{ smi_output.stdout_lines | default(['nvidia-smi failed']) }}"
+
+    - name: Fail if nvidia-smi not working after reboot
+      fail:
+        msg: >
+          nvidia-smi failed after reboot and driver install.
+          Check dmesg on the VM for errors:
+          ssh ubuntu@{{ inventory_hostname }} 'dmesg | grep -i nvidia'
+      when: smi_output.rc != 0
+
+# ------------------------------------------------------------------ #
+#  SECTION 7 — PERSISTENCE MODE                                        #
+# ------------------------------------------------------------------ #
+
+    - name: Enable nvidia-persistenced service
+      systemd:
+        name: nvidia-persistenced
+        enabled: yes
+        state: started
+      register: persistenced_result
+      failed_when: false
+      when: nvidia_persistenced
+
+    - name: Display nvidia-persistenced status
+      command: systemctl status nvidia-persistenced
+      register: persistenced_status
+      changed_when: false
+      failed_when: false
+
+    - name: Show persistenced status
+      debug:
+        msg: "{{ persistenced_status.stdout_lines | default(['persistenced not running']) }}"
+
+    - name: Set persistence mode via nvidia-smi as fallback
+      command: nvidia-smi -pm 1
+      register: persistence_mode
+      failed_when: false
+      changed_when: persistence_mode.rc == 0
+
+    - name: Display persistence mode result
+      debug:
+        msg: "{{ persistence_mode.stdout | default('persistence mode not set') }}"
+
+# ------------------------------------------------------------------ #
+#  SECTION 8 — CUDA AND PYTORCH                                        #
+# ------------------------------------------------------------------ #
+
+    - name: Check CUDA version
+      command: nvcc --version
+      register: cuda_version
+      changed_when: false
+      failed_when: false
+
+    - name: Display CUDA version
+      debug:
+        msg: "{{ cuda_version.stdout_lines | default(['nvcc not found']) }}"
+
+    - name: Install Python ML dependencies
+      apt:
+        name:
+          - python3-pip
+          - python3-venv
+          - python3-dev
+        state: present
+      failed_when: false
+
+    - name: Install PyTorch with CUDA support
+      pip:
+        name:
+          - torch
+          - torchvision
+          - torchaudio
+        extra_args: "--index-url https://download.pytorch.org/whl/cu124"
+        executable: pip3
+      register: torch_install
+      failed_when: false
+
+    - name: Display PyTorch install result
+      debug:
+        msg: "PyTorch install {{ 'succeeded' if not torch_install.failed | default(false) else 'failed' }}"
+
+    - name: Run PyTorch CUDA sanity check
+      shell: |
+        python3 -c "
+        import torch
+        print('CUDA available:', torch.cuda.is_available())
+        print('Device count:', torch.cuda.device_count())
+        print('Device name:', torch.cuda.get_device_name(0))
+        print('VRAM total:', round(torch.cuda.get_device_properties(0).total_memory / 1024**3, 1), 'GB')
+        "
+      register: torch_check
+      changed_when: false
+      failed_when: false
+
+    - name: Display PyTorch CUDA results
+      debug:
+        msg: "{{ torch_check.stdout_lines | default(['PyTorch check failed']) }}"
+
+    - name: Warn if CUDA not available in PyTorch
+      debug:
+        msg: >
+          WARNING: PyTorch cannot see CUDA.
+          nvidia-smi works but torch.cuda.is_available() is False.
+          Check CUDA toolkit version matches driver version.
+      when:
+        - torch_check.rc == 0
+        - "'CUDA available: False' in torch_check.stdout"
+
+# ------------------------------------------------------------------ #
+#  SECTION 9 — FINAL SUMMARY                                           #
+# ------------------------------------------------------------------ #
+
+    - name: Final summary
+      debug:
+        msg:
+          - "GPU visible:        {{ gpu_check.rc == 0 }}"
+          - "Driver installed:   {{ not driver_install.failed | default(false) }}"
+          - "DKMS status:        {{ dkms_check.stdout_lines | default(['unknown']) }}"
+          - "nvidia-smi:         {{ 'ok' if smi_output.rc == 0 else 'FAILED' }}"
+          - "Persistenced:       {{ 'running' if persistenced_result.failed == false else 'not running' }}"
+          - "CUDA version:       {{ cuda_version.stdout_lines[0] | default('unknown') }}"
+          - "PyTorch CUDA:       {{ 'ok' if torch_check.rc == 0 and 'CUDA available: True' in torch_check.stdout else 'FAILED' }}"
+
+  handlers:
+    - name: reboot_vm
+      debug:
+        msg: "Reboot handled by explicit reboot task in section 5"

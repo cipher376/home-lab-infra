@@ -15,7 +15,8 @@
   tasks:
     - include_tasks: task/01-no-subscription.yaml
     - include_tasks: task/02-common.yaml
-    - include_tasks: task/03-storage.yaml
+    - include_tasks: task/03-iam.yaml
+    - include_tasks: task/04-storage.yaml
 
       
   
