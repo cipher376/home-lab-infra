@@ -23,10 +23,7 @@ locals {
   template_prodesk = 9000
   template_legion  = 9001
   template_venue   = 9002
-  k3s_master_ip = split("/", proxmox_virtual_environment_vm.k3s_master.initialization[0].ip_config[0].ipv4[0].address)[0]
-  ml_worker_ip  = split("/", proxmox_virtual_environment_vm.ml_worker.initialization[0].ip_config[0].ipv4[0].address)[0]
-  gitlab_ip     = split("/", proxmox_virtual_environment_vm.gitlab_server.initialization[0].ip_config[0].ipv4[0].address)[0]
-
+  
 }
 
 # ------------------------------------------------------------------ #
@@ -52,14 +49,13 @@ resource "proxmox_virtual_environment_vm" "k3s_master" {
   }
 
   cpu {
-    cores   = 2
+    cores   = 3
     sockets = 1
     type    = "x86-64-v2-AES"
   }
 
   memory {
-    dedicated = 5096
-    floating  = 4096
+    dedicated = 6144
   }
 
   network_device {
@@ -71,7 +67,7 @@ resource "proxmox_virtual_environment_vm" "k3s_master" {
   disk {
     datastore_id = "local-lvm"
     interface    = "scsi0"
-    size         = 20
+    size         = 100
     file_format  = "raw"
     cache        = "writethrough"
     discard      = "on"
@@ -137,7 +133,7 @@ resource "proxmox_virtual_environment_vm" "k3s_master" {
 #  VM 101 — K3s Worker (prodesk-node-02)                                 #
 # ------------------------------------------------------------------ #
 
-resource "proxmox_virtual_environment_vm" "k3s_worker" {
+resource "proxmox_virtual_environment_vm" "k3s_worker_prodesk" {
   name        = "k3s-worker-prodesk"
   node_name   = "prodesk-node-02"
   vm_id       = 101
@@ -149,16 +145,17 @@ resource "proxmox_virtual_environment_vm" "k3s_worker" {
   started     = true
 
   clone {
-    vm_id     = local.template_venue 
+    vm_id     = local.template_prodesk 
     node_name = "prodesk-node-02"
     full      = true
     retries   = 3
   }
 
   cpu {
-    cores   = 2
+    cores   = 4
     sockets = 1
     type    = "x86-64-v2-AES"
+    units = 512
   }
 
   memory {
@@ -174,7 +171,7 @@ resource "proxmox_virtual_environment_vm" "k3s_worker" {
   disk {
     datastore_id = "local-lvm"
     interface    = "scsi0"
-    size         = 350
+    size         = 300
     file_format  = "raw"
     cache        = "writethrough"
     discard      = "on"
@@ -236,9 +233,9 @@ resource "proxmox_virtual_environment_vm" "k3s_worker" {
   }
 }
 
-# ------------------------------------------------------------------ #
-#  VM 200 — ML GPU Worker (legion-node-01)                             #
-# ------------------------------------------------------------------ #
+#------------------------------------------------------------------ #
+# VM 200 — ML GPU Worker (legion-node-01)                             #
+#------------------------------------------------------------------ #
 
 resource "proxmox_virtual_environment_vm" "ml_worker" {
   name        = "ml-gpu-worker-legion"
@@ -363,14 +360,8 @@ resource "proxmox_virtual_environment_file" "gitlab_cloud_config" {
   datastore_id = "local"
 
   source_raw {
+    file_name = "gitlab-config.yaml"
     data      = <<-EOF
-      #cloud-config
-      runcmd:
-        - fallocate -l 4G /swapfile
-        - chmod 600 /swapfile
-        - mkswap /swapfile
-        - swapon /swapfile
-        - echo '/swapfile none swap sw 0 0' >> /etc/fstab
       #cloud-config
       users:
         - name: ubuntu
@@ -378,9 +369,17 @@ resource "proxmox_virtual_environment_file" "gitlab_cloud_config" {
           shell: /bin/bash
           sudo: ['ALL=(ALL) NOPASSWD:ALL']
           ssh_authorized_keys:
-            - ssh-rsa {{ ssh_public_key }} # Your actual public key here
+            - ${var.ssh_public_key}
+      hostname: gitlab-server
+      fqdn: gitlab-server.local  
+      manage_etc_hosts: true     
+      runcmd:
+        - fallocate -l 4G /swapfile
+        - chmod 600 /swapfile
+        - mkswap /swapfile
+        - swapon /swapfile
+        - echo '/swapfile none swap sw 0 0' >> /etc/fstab
       EOF
-    file_name = "gitlab-config.yaml"
   }
 }
 
@@ -396,8 +395,6 @@ resource "proxmox_virtual_environment_vm" "gitlab_server" {
   started     = true
 
 
-  
-
   clone {
     vm_id     = local.template_prodesk
     node_name = "prodesk-node-02"
@@ -409,6 +406,7 @@ resource "proxmox_virtual_environment_vm" "gitlab_server" {
     cores   = 4
     sockets = 1
     type    = "host"
+    units = 1024
   }
 
   memory {
@@ -480,11 +478,6 @@ resource "proxmox_virtual_environment_vm" "gitlab_server" {
         gateway = "172.16.0.1"
       }
     }
-
-    user_account {
-      keys     = [var.ssh_public_key]
-      username = "ubuntu"
-    }
   }
 
   lifecycle {
@@ -500,18 +493,3 @@ resource "proxmox_virtual_environment_vm" "gitlab_server" {
 
 
 
-# ------------------------------------------------------------------ #
-#  OUTPUTS                                                             #
-# ------------------------------------------------------------------ #
-
-output "k3s_master_ip" {
-  value = local.k3s_master_ip
-}
-
-output "ml_worker_ip" {
-  value = local.ml_worker_ip
-}
-
-output "gitlab_ip" {
-  value = local.gitlab_ip
-}

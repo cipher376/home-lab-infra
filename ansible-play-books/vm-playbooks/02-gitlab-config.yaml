@@ -212,31 +212,6 @@
 # ------------------------------------------------------------------ #
 #  SECTION 7 — GITLAB RUNNER SETUP                                     #
 # ------------------------------------------------------------------ #
-
-    - name: Check if GitLab Runner repo is configured
-      stat:
-        path: /etc/apt/sources.list.d/runner_gitlab-runner.list
-      register: runner_repo_check
-
-    - name: Add GitLab Runner repository
-      shell: |
-        curl -L "https://packages.gitlab.com/install/repositories/runner/gitlab-runner/script.deb.sh" | bash
-      args:
-        creates: /etc/apt/sources.list.d/runner_gitlab-runner.list
-      when: not runner_repo_check.stat.exists
-
-    - name: Install GitLab Runner
-      apt:
-        name: gitlab-runner
-        state: present
-        update_cache: yes
-
-    - name: Ensure GitLab Runner service is running
-      systemd:
-        name: gitlab-runner
-        enabled: yes
-        state: started
-
     - name: Display runner registration instructions
       debug:
         msg:

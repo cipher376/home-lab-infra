@@ -1,0 +1,26 @@
+"================================================",
+        "GitLab installed on VM 300 — gitlab-server",
+        "================================================",
+        "GitLab URL:   http://172.16.0.102",
+        "VM IP:        172.16.0.102",
+        "================================================",
+        "To register GPU worker as GitLab Runner:",
+        "1. Go to http://172.16.0.102/-/admin/runners",
+        "2. Copy the registration token",
+        "3. Run on ml-gpu-worker-legion (172.16.0.101):",
+        "   gitlab-runner register --url http://172.16.0.102 --token <TOKEN>",
+        "================================================"
+
+
+        "GitLab URL:       http://172.16.0.102",
+        "Username:         root",
+        "Initial password: ['# WARNING: This password is only valid if ALL of the following are true:', '#        
+          • You set it manually via the GITLAB_ROOT_PASSWORD environment variable', \"#           
+           OR the gitlab_rails['initial_root_password'] setting in /etc/gitlab/gitlab.rb\", '#        
+             • You set it BEFORE the initial database setup (typically during first installation)', '#      
+                 • You have NOT changed the password since then (via web UI or command line)', '#', \"#      
+                     If this password doesn't work, reset the admin password using:\", '#         
+                      https://docs.gitlab.com/security/reset_user_password/#reset-the-root-password', '', 
+                      'Password: d+DQgq9LUy+z91GCl55sgj/QFKcl78twWsc8cNAhJaQ=', '', '# 
+                      NOTE: This file is automatically deleted after 24 hours on the next reconfigure run.']",
+        "NOTE: Change your password immediately — this file is deleted after 24 hours"

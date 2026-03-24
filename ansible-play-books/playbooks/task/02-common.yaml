@@ -5,6 +5,7 @@
           - libguestfs-tools
           - nfs-kernel-server
           - qemu-guest-agent
+          - nfs-common
         state: present
         update_cache: yes
 
@@ -12,3 +13,5 @@
       # We use 'pvesm set' to ensure the 'local' directory can host our Terraform yaml files
       command: pvesm set local --content backup,iso,vztmpl,snippets
       changed_when: false
+
+    

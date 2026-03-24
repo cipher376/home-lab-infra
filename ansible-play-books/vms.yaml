@@ -1,7 +1,11 @@
 ---
+
+
+
+
 # - import_playbook: vm-playbooks/01-install-gpu-drivers.yaml
-- import_playbook: vm-playbooks/02-gitlab-config.yaml
-# - import_playbook: vm-playbooks/03-k3s-config.yaml
+# - import_playbook: vm-playbooks/02-gitlab-config.yaml
+- import_playbook: vm-playbooks/03-k3s-config.yaml
 
 - name: Final local setup
   hosts: localhost

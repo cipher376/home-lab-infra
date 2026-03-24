@@ -1,5 +1,5 @@
 - name: "Install NVIDIA Drivers and CUDA in ML Worker VM"
-  hosts: worker_vms
+  hosts: ml_workers
   become: true
   vars:
     nvidia_driver: "nvidia-driver-570-server"
