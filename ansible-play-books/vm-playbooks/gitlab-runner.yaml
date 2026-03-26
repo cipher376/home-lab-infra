@@ -23,7 +23,7 @@
           - "node-role.kubernetes.io/gitlab=true"
           - "app=gitlab"
     gitlab_runner_token: "{{ lookup('env', 'GITLAB_RUNNER_TOKEN') }}"
-    gitlab_url: "https://gitlab.com/"
+    gitlab_url: "http://172.16.0.102" #Gitlab server IP
   
   tasks:
     # ------------------------------------------------------------------ #
@@ -44,19 +44,19 @@
       register: helm_check
       failed_when: false
       changed_when: false
-      delegate_to: "{{ groups['k3s_master'][0] }}"
+      delegate_to: k3s-master-venue 
       run_once: true
 
     - name: Install Helm if not present
       shell: |
         curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
       when: helm_check.rc != 0
-      delegate_to: "{{ groups['k3s_master'][0] }}"
+      delegate_to: k3s-master-venue 
       run_once: true
 
     - name: Add GitLab Helm repository
       command: helm repo add gitlab https://charts.gitlab.io
-      delegate_to: "{{ groups['k3s_master'][0] }}"
+      delegate_to: k3s-master-venue 
       run_once: true
       register: helm_repo_add
       failed_when: false
@@ -64,12 +64,12 @@
 
     - name: Update Helm repositories
       command: helm repo update
-      delegate_to: "{{ groups['k3s_master'][0] }}"
+      delegate_to: k3s-master-venue 
       run_once: true
 
     - name: Create GitLab Runner namespace
       command: kubectl create namespace gitlab-runner
-      delegate_to: "{{ groups['k3s_master'][0] }}"
+      delegate_to: k3s-master-venue 
       run_once: true
       register: namespace_create
       failed_when: false
@@ -78,26 +78,62 @@
     - name: Create GitLab Runner values file
       copy:
         dest: /tmp/gitlab-runner-values.yaml
+        mode: '0644'
         content: |
           gitlabUrl: {{ gitlab_url }}
-          runnerRegistrationToken: "{{ gitlab_runner_token }}"
-          
+          # Use runnerToken for glrt- style tokens (Recommended)
+          runnerToken: "{{ gitlab_runner_token }}"
+
+          rbac:
+            create: true
+
           runners:
             config: |
               [[runners]]
+                request_concurrency = 2
                 [runners.kubernetes]
-                  namespace = "{{.Release.Namespace}}"
-                  image = "ubuntu:22.04"
+                  namespace = "gitlab-runner"
+                  image = "pytorch/pytorch:2.2.0-cuda12.1-cudnn8-runtime"
                   privileged = true
-                  poll_timeout = 180
-                  cpu_request = "100m"
-                  memory_request = "128Mi"
+                  cpu_limit = "4"
+                  memory_limit = "8Gi"
+                  service_account = "gitlab-runner"
+
+                # 1. Hardware Targeting: Ensure jobs land on the gpu-worker node with NVIDIA GPUs
+                [[runners.kubernetes.node_selector]]
+                  hardware = "gpu"
+
+                # 2. Bypassing the Taint you put on the Legion node
+                [[runners.kubernetes.tolerations]]
+                  key = "dedicated"
+                  operator = "Equal"
+                  value = "gpu"
+                  effect = "NoSchedule"
+
+                # 3. Resource Requests: Crucial for the NVIDIA device plugin to trigger GPU allocation
+                [runners.kubernetes.pod_annotations]
+                  "nvidia.com/gpu" = "1"
+
+                # 4. NVIDIA Runtime: Tells K3s to use the nvidia container runtime
+                [[runners.kubernetes.volumes.host_path]]
+                  name = "nvidia-libs"
+                  mount_path = "/usr/local/nvidia"
+                  read_only = true
+                  host_path = "/lib/x86_64-linux-gnu"
+                
+                # 5. Local Cache: High-speed scratch space for Unsloth / HuggingFace
                 [[runners.kubernetes.volumes.empty_dir]]
-                  name = "docker-certs"
-                  mount_path = "/certs/client"
-                  medium = "Memory"
-            
-            # Resource limits for the runner pod itself
+                  name = "model-cache"
+                  mount_path = "/root/.cache/huggingface"
+                  host_path = "/mnt/training-cache/.cache" # Use your NFS path here
+                  #medium = "Memory" # Or remove this line to use Disk if 8GB RAM is tight
+                
+                [[runners.kubernetes.volumes.host_path]]
+                  name = "nfs-checkpoints"
+                  mount_path = "/models/checkpoints" # Path inside the Pod
+                  host_path = "/mnt/training-cache/checkpoints" # Actual path on your Legion node
+                  read_only = false
+                        
             resources:
               limits:
                 memory: 512Mi
@@ -105,45 +141,57 @@
               requests:
                 memory: 128Mi
                 cpu: 100m
-            
-            # Schedule on GPU node if available
-            nodeSelector:
-              nvidia.com/gpu: "true"
-            
-            # Allow scheduling on nodes without GPU as fallback
-            tolerations:
-              - key: "nvidia.com/gpu"
-                operator: "Exists"
-                effect: "NoSchedule"
-        mode: '0644'
-      delegate_to: "{{ groups['k3s_master'][0] }}"
+      delegate_to: k3s-master-venue
       run_once: true
 
     - name: Check if GitLab Runner is already installed
       command: helm list -n gitlab-runner -o json
       register: helm_list
-      delegate_to: "{{ groups['k3s_master'][0] }}"
+      delegate_to: k3s-master-venue 
+      become: true
       run_once: true
       changed_when: false
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+
+    - name: Delete GitLab Runner namespace if it exists
+      kubernetes.core.k8s:
+        state: absent
+        api_version: v1
+        kind: Namespace
+        name: gitlab-runner
+        # Wait ensures the namespace is fully purged from the API
+        wait: yes
+        wait_timeout: 300 # 5 minutes for heavy cleanup
+      delegate_to: k3s-master-venue
+      run_once: true
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
 
     - name: Install or upgrade GitLab Runner via Helm
-      command: >
-        helm upgrade --install gitlab-runner gitlab/gitlab-runner
-        --namespace gitlab-runner
-        --values /tmp/gitlab-runner-values.yaml
-        --wait
-        --timeout 5m
-      delegate_to: "{{ groups['k3s_master'][0] }}"
+      kubernetes.core.helm:
+        name: gitlab-runner
+        chart_ref: gitlab/gitlab-runner
+        release_namespace: gitlab-runner
+        create_namespace: true
+        values_files:
+          - /tmp/gitlab-runner-values.yaml
+        wait: yes
+        timeout: 300s
+      register: runner_install
+      delegate_to: k3s-master-venue
+      become: true
       run_once: true
-      register: helm_install
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
 
     - name: Display GitLab Runner installation status
       debug:
-        msg: "{{ helm_install.stdout_lines }}"
+        msg: "{{ runner_install.stdout_lines }}"
 
     - name: Wait for GitLab Runner pod to be ready
       command: kubectl wait --for=condition=ready pod -l app=gitlab-runner -n gitlab-runner --timeout=300s
-      delegate_to: "{{ groups['k3s_master'][0] }}"
+      delegate_to: k3s-master-venue 
       run_once: true
       register: runner_ready
       retries: 3
@@ -153,7 +201,7 @@
     - name: Get GitLab Runner pod status
       command: kubectl get pods -n gitlab-runner -o wide
       register: runner_pods
-      delegate_to: "{{ groups['k3s_master'][0] }}"
+      delegate_to: k3s-master-venue 
       run_once: true
 
     - name: Display GitLab Runner pod status
@@ -163,7 +211,7 @@
     - name: Verify runner registration
       command: kubectl logs -n gitlab-runner -l app=gitlab-runner --tail=50
       register: runner_logs
-      delegate_to: "{{ groups['k3s_master'][0] }}"
+      delegate_to: k3s-master-venue 
       run_once: true
 
     - name: Display runner logs

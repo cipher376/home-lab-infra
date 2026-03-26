@@ -208,7 +208,22 @@
           - "Username:         root"
           - "Initial password: {{ root_password.stdout_lines | default(['Password file not found — already changed or expired']) }}"
           - "NOTE: Change your password immediately — this file is deleted after 24 hours"
-
+    
+    - name: Write login info to file
+      copy:
+        dest: /tmp/gitlab_login_info.txt
+        content: |
+          GitLab URL:       {{ gitlab_external_url }}
+          Username:         root
+          Initial password: {{ root_password.stdout_lines | default(['Password file not found — already changed or expired']) }}
+          NOTE: Change your password immediately — this file is deleted after 24 hours
+    
+    - name: Save login info to local machine
+      fetch:
+        src: /tmp/gitlab_login_info.txt
+        dest: ~/Scripts/gitlab_login_info.txt
+        flat: yes
+      
 # ------------------------------------------------------------------ #
 #  SECTION 7 — GITLAB RUNNER SETUP                                     #
 # ------------------------------------------------------------------ #

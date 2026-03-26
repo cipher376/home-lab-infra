@@ -267,7 +267,7 @@ resource "proxmox_virtual_environment_vm" "ml_worker" {
   }
 
   memory {
-    dedicated = 28668
+    dedicated = 26244
     floating  = 24576
   }
 
@@ -281,7 +281,7 @@ resource "proxmox_virtual_environment_vm" "ml_worker" {
 
   network_device {
     bridge   = "vmbr0"
-    model    = "virtio"
+    model    = "virtio"                     
     firewall = false
   }
 

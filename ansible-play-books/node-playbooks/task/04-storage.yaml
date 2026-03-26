@@ -150,7 +150,7 @@
       vars:
         ansible_user: root
       run_once: true
-      timeout: 30
+      timeout: 10
 
     - name: Mount the Volume and add to fstab
       ansible.posix.mount:
@@ -169,6 +169,7 @@
         regexp: "^{{ mount_path_ssd }}"
         state: present
       register: lv_nfs_config
+      notify: Restart NFS Server
       delegate_to: 'legion-node-01'
       run_once: true 
     
@@ -218,28 +219,7 @@
       vars:
         ansible_user: root
 
-    - name: Register NFS Shares Dynamically for Cluster-Model-Fast LV
-      shell: |
-        # Use the IP from the inventory automatically
-        TARGET_IP="{{ hostvars['legion-node-01']['ansible_host'] }}"
-
-        pvesm add nfs Cluster-Model-Fast \
-          --server $TARGET_IP \
-          --export {{mount_path_ssd}} \
-          --content iso,vztmpl,images || true
-          --nodes legion-node-01,legion-node-01,venue-node-03
-      # This tells Ansible to run the command ON the legion-node-01
-      delegate_to: legion-node-01
-      register: pve_out2
-      # FAIL if any of these strings appear, but ignore the "already exists" message
-      failed_when: 
-        - "'error' in pve_out2.stderr.lower()"
-        - "'denied' in pve_out2.stderr.lower()"
-        - "'unexpected' in pve_out2.stderr.lower()"
-        - "'already exists' not in pve_out2.stderr"
-      changed_when: "'already exists' not in pve_out2.stderr"
-      vars:
-        ansible_user: root
+    
       
 
     - name: Display pvesm add result
@@ -251,7 +231,6 @@
       shell: |
         pvesm set Cluster-Templates --disable 0 || true
         pvesm set Cluster-Models --disable 0 || true
-        pvesm set {{lv_name}} --disable 0 || true
         # Kick the status daemon to clear the "?" icons
         systemctl restart pvestatd
       tags: refresh

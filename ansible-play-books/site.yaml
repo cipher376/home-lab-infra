@@ -1,7 +1,7 @@
 ---
 - import_playbook: playbooks/01-proxmox_bootstrap.yaml
-# - import_playbook: playbooks/02-create_ubuntu_templates.yaml
-# - import_playbook: playbooks/03-gpu_passthrough.yaml
+- import_playbook: playbooks/02-create_ubuntu_templates.yaml
+- import_playbook: playbooks/03-gpu_passthrough.yaml
 
 - name: Final local setup
   hosts: localhost

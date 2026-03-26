@@ -9,10 +9,6 @@
     template_path: "/HDD-8Tb/templates"
     gpu_id: "0000:01:00.0"
     # Adjust 'pve' to your actual Volume Group name (usually 'pve' or 'local')
-    vg_name: "pve" 
-    lv_name: "Cluster-Model-Fast"
-    lv_size: "1000G"
-    mount_path_ssd: "/mnt/pve/Cluster-Model-Fast"
     token: "terraform-prov@pve!haivision-manager"
   
   vars_files:
@@ -25,6 +21,16 @@
     - include_tasks: task/04-storage.yaml
 
   
+  handlers:
+    - name: Restart NFS Server
+      shell: |
+        exportfs -ra
+        systemctl reload nfs-kernel-server 2>/dev/null || \
+        systemctl restart nfs-kernel-server --no-block 2>/dev/null || true
+        echo "NFS reloaded"
+      changed_when: false
+      failed_when: false
+      timeout: 30
 
     
     
