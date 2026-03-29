@@ -1,0 +1,121 @@
+- name: "Install and Configure Gitlab Runner on K3s Cluster (Master + Workers)"
+  hosts: k3s_servers
+  become: true
+  vars:
+    gitlab_argocd_token: "{{gitlab_group_token}}"
+    gitlab_argo_group_name: "{{gitlab_group_name}}"
+    gitlab_server: "172.16.0.102"
+  tasks:
+    - name: Validate GitLab Deployement token
+      assert:
+        that:
+          - gitlab_argocd_token is defined
+          - gitlab_argocd_token | length > 20
+          - gitlab_argocd_token is search('^glpat-') # Ensures it's not a raw string
+        fail_msg: "Deployment token is missing or incorrectly decrypted! Ensure you used --vault-password-file."
+        success_msg: "GitLab Deployment token validated successfully."
+      run_once: true
+
+    - name: Add ArgoCD Helm Repository
+      kubernetes.core.helm_repository:
+        name: argo
+        repo_url: "https://argoproj.github.io/argo-helm"
+      # This ensures the repo is added to the Helm config on the master node
+      delegate_to: k3s-master-venue
+      run_once: true
+
+    - name: Deploy ArgoCD via Helm
+      kubernetes.core.helm:
+        name: argocd
+        chart_ref: argo/argo-cd
+        release_namespace: argocd
+        create_namespace: true
+        # In a lab, we often disable forced TLS to make Ingress easier
+        values:
+          server:
+            extraArgs:
+              - --insecure 
+          configs:
+            params:
+              server.insecure: "true"
+      delegate_to: k3s-master-venue
+      run_once: true
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+    
+
+    - name: Wait for ArgoCD Server to be ready
+      kubernetes.core.k8s_info:
+        kind: Pod
+        wait: yes
+        namespace: argocd
+        label_selectors:
+          - app.kubernetes.io/name=argocd-server
+        wait_condition:
+          type: Ready
+          status: "True"
+        wait_timeout: 300
+      become: true
+      delegate_to: k3s-master-venue
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+      run_once: true
+
+
+    - name: Expose ArgoCD via Cilium Gateway
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: gateway.networking.k8s.io/v1
+          kind: HTTPRoute
+          metadata:
+            name: argocd-route
+            namespace: argocd
+          spec:
+            parentRefs:
+              - name: cilium-gateway
+                namespace: cilium-secrets
+            hostnames:
+              - "argocd.lab.lan"
+            rules:
+              - matches:
+                  - path:
+                      type: PathPrefix
+                      value: /
+                backendRefs:
+                  - name: argocd-server
+                    port: 80
+      become: true
+      delegate_to: k3s-master-venue
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+      run_once: true
+    
+    
+    - name: Create ArgoCD Group Credential Template
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: gitlab-group-creds
+            namespace: argocd
+            labels:
+              # CRITICAL: 'repo-creds' makes this a template for the whole group
+              argocd.argoproj.io/secret-type: repo-creds
+          stringData:
+            type: git
+            # Match the base URL of your GitLab group
+            url: "http://{{gitlab_server}}/{{ gitlab_argo_group_name }}"
+            # For GitLab Group Tokens, the username can be anything (e.g., 'argocd-bot')
+            username: "argocd-bot"
+            # The 'glpat-...' token goes here
+            password: "{{ gitlab_argocd_token }}"  
+      become: true
+      delegate_to: k3s-master-venue
+      run_once: true
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml 
+
+   

@@ -1,0 +1,121 @@
+- name: Setup NFS File share between gitlab-server and GPU VMs
+  hosts: all_vms
+  become: true
+  vars:
+    storage_node_ip: "172.16.0.15" # IP of the ProDesk node hosting the NFS export
+    nfs_export_path: "/HDD-8Tb/models" # NFS export path on the ProDesk node
+    nfs_mount_point: "/mnt/datasets-nfs" # mount point on the GPU VM
+    nfs_mount_opts_rw: "rw,soft,timeo=30"
+    local_cache_path: "/mnt/training-cache"
+  
+  tasks:
+    - name: Install NFS client packages
+      apt:
+        name: nfs-common
+        state: present
+        update_cache: yes
+      when: (ansible_hostname != "k3s-master-venue") and (ansible_hostname != "k3s-worker-prodesk")
+    
+    
+    - name: Check if NFS directory exists
+      stat:
+        path: "{{ nfs_mount_point }}"
+      register: nfs_dir
+
+    - name: Debug directory status
+      debug:
+        msg: "Directory already exists"
+      when: nfs_dir.stat.exists
+    
+    
+    - name: Create NFS mount point directory
+      file:
+        path: "{{ nfs_mount_point }}"
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+      when: 
+      - (ansible_hostname != "k3s-master-venue") and (ansible_hostname != "k3s-worker-prodesk")
+      - not nfs_dir.stat.exists
+
+    - name: Create local training cache directories
+      file:
+        path: "{{ local_cache_path }}/{{ item }}"
+        state: directory
+        mode: '0755'
+      loop:
+        - datasets
+        - checkpoints
+        - artifacts
+        - final-models
+        - .cache
+      delegate_to: ml-gpu-worker-legion
+      run_once: true 
+      
+    - name: Wait for NFS server to be ready
+      wait_for:
+        host: "{{ storage_node_ip }}"
+        port: 2049
+        timeout: 30
+      when: (ansible_hostname != "k3s-master-venue") and (ansible_hostname != "k3s-worker-prodesk")
+      
+    - name: Check if NFS export is available
+      command: showmount -e {{ storage_node_ip }}
+      register: nfs_exports
+      changed_when: false
+      retries: 3
+      delay: 5
+      until: nfs_exports.rc == 0
+      when: (ansible_hostname != "k3s-master-venue") and (ansible_hostname != "k3s-worker-prodesk") 
+
+    - name: Display available NFS exports
+      debug:
+        msg: "{{ nfs_exports.stdout_lines }}"
+      when : (ansible_hostname != "k3s-master-venue") and (ansible_hostname != "k3s-worker-prodesk")
+
+    - name: Mount NFS share
+      mount:
+        path: "{{ nfs_mount_point }}"
+        src: "{{ storage_node_ip }}:{{ nfs_export_path }}"
+        fstype: nfs
+        opts: "{{ nfs_mount_opts_rw }}"
+        state: mounted
+        backup: yes
+      when: (ansible_hostname != "k3s-master-venue") and (ansible_hostname != "k3s-worker-prodesk")
+      
+    - name: Verify NFS mount is working
+      command: ls -la {{ nfs_mount_point }}
+      register: mount_contents
+      changed_when: false
+      when: (ansible_hostname != "k3s-master-venue") and (ansible_hostname != "k3s-worker-prodesk")
+
+
+    - name: Display mount contents
+      debug:
+        msg: "{{ mount_contents.stdout_lines }}"
+      when: (ansible_hostname != "k3s-master-venue") and (ansible_hostname != "k3s-worker-prodesk")
+
+    - name: Create test file on local cache
+      copy:
+        content: |
+          # ML Training Cache
+          This directory is used for:
+          - datasets: Local copies of datasets from NFS
+          - checkpoints: Model checkpoints during training
+          - artifacts: Training artifacts and logs
+          - final-models: Final trained models before upload
+        dest: "{{ local_cache_path }}/README.md"
+        mode: '0644'
+      when: ansible_hostname == "ml-gpu-worker-legion"  
+
+
+    - name: Display setup summary
+      debug:
+        msg:
+          - "NFS Mount Setup Complete!"
+          - "NFS Server: {{ storage_node_ip }}:{{ nfs_export_path }}"
+          - "Mounted at: {{ nfs_mount_point }}"
+          - "Local cache: {{ local_cache_path }}"
+          - "Mount options: {{ nfs_mount_opts_rw }}"
+      when: (ansible_hostname != "k3s-master-venue") and (ansible_hostname != "k3s-worker-prodesk")

@@ -1,0 +1,36 @@
+---
+- name: "Bootstrap Proxmox Cluster: Hardware & Storage Readiness"
+  hosts: proxmox_nodes
+  become: yes
+  vars:
+    # Industry Standard: Define variables for easy updates
+    network_range: "172.16.0.0/24"
+    model_path: "/HDD-8Tb/models"
+    template_path: "/HDD-8Tb/templates"
+    gpu_id: "0000:01:00.0"
+    # Adjust 'pve' to your actual Volume Group name (usually 'pve' or 'local')
+    token: "terraform-prov@pve!haivision-manager"
+  
+  vars_files:
+    - ../vars/secrets.yaml  
+
+  tasks:
+    - include_tasks: task/01-no-subscription.yaml
+    - include_tasks: task/02-common.yaml
+    - include_tasks: task/03-iam.yaml
+    - include_tasks: task/04-storage.yaml
+
+  
+  handlers:
+    - name: Restart NFS Server
+      shell: |
+        exportfs -ra
+        systemctl reload nfs-kernel-server 2>/dev/null || \
+        systemctl restart nfs-kernel-server --no-block 2>/dev/null || true
+        echo "NFS reloaded"
+      changed_when: false
+      failed_when: false
+      timeout: 30
+
+    
+    

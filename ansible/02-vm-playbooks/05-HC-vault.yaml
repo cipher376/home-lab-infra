@@ -1,0 +1,52 @@
+---
+- name: Deploy HashiCorp Vault to K3s
+  hosts: k3s_servers # Your 'Venue' node
+  become: false
+  vars:
+    vault_namespace: vault
+    vault_chart_version: "0.28.0" # Use the latest stable for 2026
+
+  tasks:
+    - name: Add HashiCorp Helm repository
+      kubernetes.core.helm_repository:
+        name: hashicorp
+        repo_url: "https://helm.releases.hashicorp.com"
+      delegate_to: k3s-master-venue
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+      run_once: true
+
+    - name: Create Vault namespace
+      kubernetes.core.k8s:
+        name: "{{ vault_namespace }}"
+        api_version: v1
+        kind: Namespace
+        state: present
+      delegate_to: k3s-master-venue
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+      run_once: true
+
+    - name: Deploy Vault via Helm
+      kubernetes.core.helm:
+        name: vault
+        chart_ref: hashicorp/vault
+        chart_version: "{{ vault_chart_version }}"
+        release_namespace: "{{ vault_namespace }}"
+        create_namespace: true
+        values:
+          server:
+            dev:
+              enabled: true  # Starts Vault unsealed with a root token
+            dataStorage:
+              enabled: true
+              size: 5Gi
+          injector:
+            enabled: true    # CRITICAL: Enables secret injection for your GPU pods
+          ui:
+            enabled: true
+            serviceType: LoadBalancer # Access via ProDesk/Venue IP
+      delegate_to: k3s-master-venue
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+      run_once: true

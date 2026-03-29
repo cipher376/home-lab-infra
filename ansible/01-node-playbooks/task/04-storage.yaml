@@ -1,0 +1,253 @@
+# --- SECTION 4: PRODESK NODE (STORAGE & NFS) ---
+    - name: Check if ZFS pool already exists
+      shell: "zpool list -H -o name | grep -w 'HDD-8Tb'"
+      register: zpool_check
+      failed_when: false
+      changed_when: false
+      when: inventory_hostname == 'prodesk-node-02'
+
+    - name: Wipe existing partitions on 8TB drive
+      # Only run wipefs if the pool IS NOT found and partitions ARE found
+      shell: "wipefs -a /dev/sda"
+      when: 
+        - inventory_hostname == 'prodesk-node-02'
+        - zpool_check.rc != 0
+        - ansible_facts['devices']['sda']['partitions'] | length > 0
+      ignore_errors: yes 
+
+    - name: Ensure ZFS Pool exists on 8TB Drive
+      community.general.zpool:
+        name: "HDD-8Tb"
+        state: present
+        vdevs:
+          - disks:
+              - /dev/sda
+        pool_properties:
+          ashift: "12"
+      when: inventory_hostname == 'prodesk-node-02'
+
+    - name: Create Models Dataset with ML Optimizations
+      community.general.zfs:
+        name: "HDD-8Tb/models"
+        state: present
+        extra_zfs_properties:
+          recordsize: 1M
+          compression: lz4
+          atime: "off"
+          mountpoint: /HDD-8Tb/models
+      when: inventory_hostname == 'prodesk-node-02'
+    - name: Create Templates Dataset for vm images and ISOs
+      community.general.zfs:
+        name: "HDD-8Tb/templates"
+        state: present
+        extra_zfs_properties:
+          recordsize: 1M
+          compression: lz4
+          atime: "off"
+          mountpoint: /HDD-8Tb/templates
+      when: inventory_hostname == 'prodesk-node-02'
+    - name: Verify ZFS Health for 8TB Pool
+      command: zpool status HDD-8Tb
+      changed_when: false
+      when: inventory_hostname == 'prodesk-node-02'
+    
+    - name: "CRITICAL CLEAN: Remove ZFS Shadow Exports"
+      shell: |
+        # 1. Turn off ZFS-managed sharing to stop it from recreating files
+        zfs set sharenfs=off HDD-8Tb/templates || true
+        zfs set sharenfs=off HDD-8Tb/models || true
+
+        # 2. Delete the offending auto-generated files
+        rm -f /etc/exports.d/zfs.exports
+        rm -f /etc/exports.d/zfs.exports.lock
+      delegate_to: prodesk-node-02
+      register: final_nfs_run
+      failed_when: 
+        - "final_nfs_run.rc != 0"
+
+    - name: Setup Model Registry Directory
+      # Industry Standard: Explicitly set 777 for multi-VM shared access
+      file:
+        path: "{{ model_path }}"
+        state: directory
+        owner: root
+        group: root
+        mode: '0777'
+      when: inventory_hostname == 'prodesk-node-02'
+    - name: Export Model Registry via NFS
+      # lineinfile ensures we don't duplicate lines in /etc/exports
+      lineinfile:
+        path: /etc/exports
+        line: "{{ model_path }} {{ network_range }}(rw,sync,no_subtree_check,no_root_squash)"
+        state: present
+      register: model_nfs_config
+      when: inventory_hostname == 'prodesk-node-02'
+    - name: Setup Template Registry Directory
+      # Industry Standard: Explicitly set 777 for multi-VM shared access
+      file:
+        path: "{{ template_path }}"
+        state: directory
+        owner: root
+        group: root
+        mode: '0777'
+      when: inventory_hostname == 'prodesk-node-02'
+      
+    - name: Export Template Registry via NFS
+      # lineinfile ensures we don't duplicate lines in /etc/exports
+      lineinfile:
+        path: /etc/exports
+        line: "{{ template_path }} {{ network_range }}(rw,sync,no_subtree_check,no_root_squash)"
+        state: present
+      register: template_nfs_config
+      when: inventory_hostname == 'prodesk-node-02'
+
+    - name: Apply NFS changes
+      command: exportfs -ra
+      when: 
+        - inventory_hostname == 'prodesk-node-02'
+        - (model_nfs_config.changed or template_nfs_config.changed)
+
+#---------------------------------------------------------------------------------#
+# CREATE CLUSTER-MODEL-FAST LV AND MOUNT (OPTIONAL FOR MODEL TRAINING SPEEDUPS)
+#---------------------------------------------------------------------------------#
+    - name: Check if Cluster-Model-Fast LV exists
+      shell: "lvs /dev/{{ vg_name }}/{{ lv_name }}"
+      register: lv_check
+      failed_when: false
+      changed_when: false
+      delegate_to: legion-node-01
+      run_once: true # Crucial: Prevents other nodes from trying this
+    
+    - name: Create Logical Volume for Shared Storage
+      community.general.lvol:
+        vg: "{{ vg_name }}"
+        thinpool: "data"             # Add this line (verify name with 'lvs')
+        lv: "{{ lv_name }}"
+        size: "{{ lv_size }}"
+        # opts: "--thin"
+        state: present
+      delegate_to: 'legion-node-01'
+      run_once: true 
+      when: lv_check.rc == 0
+
+
+    - name: Create Filesystem (ext4) on the New Volume
+      community.general.filesystem:
+        fstype: ext4
+        dev: "/dev/{{ vg_name }}/{{ lv_name }}"
+      delegate_to: 'legion-node-01'
+      run_once: true 
+
+    - name: Create mount point directory on legion-node-01
+      shell: |
+        mkdir -p {{ mount_path_ssd }}
+        chmod 0777 {{ mount_path_ssd }}
+        chown root:root {{ mount_path_ssd }}
+        echo "directory created"
+      register: dir_create
+      changed_when: "'directory created' in dir_create.stdout"
+      delegate_to: "legion-node-01"
+      vars:
+        ansible_user: root
+      run_once: true
+      timeout: 10
+
+    - name: Mount the Volume and add to fstab
+      ansible.posix.mount:
+        path: "{{ mount_path_ssd }}"
+        src: "/dev/{{ vg_name }}/{{ lv_name }}"
+        fstype: ext4
+        opts: noatime,nodiratime
+        state: mounted
+      delegate_to: 'legion-node-01'
+      run_once: true 
+
+    - name: Configure NFS Exports
+      lineinfile:
+        path: /etc/exports
+        line: "{{ mount_path_ssd }} {{ network_range }}(rw,sync,no_subtree_check,no_root_squash,fsid=1)"
+        regexp: "^{{ mount_path_ssd }}"
+        state: present
+      register: lv_nfs_config
+      notify: Restart NFS Server
+      delegate_to: 'legion-node-01'
+      run_once: true 
+    
+    - name: Apply NFS changes
+      command: exportfs -ra
+      when: 
+        - inventory_hostname == 'legion-node-01'
+
+    - name: Ensure NFS is enabled and running
+      systemd:
+        name: nfs-kernel-server
+        enabled: yes
+        state: started
+    
+
+#---------------------------------------------------------------------------------#
+# REGISTER NEW NFS STORAGE IN PROXMOX AND GRANT ACCESS TO TERRAFORM TOKEN
+#---------------------------------------------------------------------------------#
+
+    - name: Register NFS Shares Dynamically for HDD-8Tb Pool
+      shell: |
+        # Use the IP from the inventory automatically
+        TARGET_IP="{{ hostvars['prodesk-node-02']['ansible_host'] }}"
+
+        pvesm add nfs Cluster-Templates \
+          --path /mnt/pve/Cluster-Templates \
+          --server $TARGET_IP \
+          --export /HDD-8Tb/templates \
+          --content iso,vztmpl,images || true
+
+        pvesm add nfs Cluster-Models \
+          --path /mnt/pve/Cluster-Models \
+          --server $TARGET_IP \
+          --export /HDD-8Tb/models \
+          --content images || true
+      run_once: true
+      # This tells Ansible to run the command ON the ProDesk node
+      delegate_to: prodesk-node-02
+      register: pve_out
+      # FAIL if any of these strings appear, but ignore the "already exists" message
+      failed_when: 
+        - "'error' in pve_out.stderr.lower()"
+        - "'denied' in pve_out.stderr.lower()"
+        - "'unexpected' in pve_out.stderr.lower()"
+        - "'already exists' not in pve_out.stderr"
+      changed_when: "'already exists' not in pve_out.stderr"
+      vars:
+        ansible_user: root
+
+    
+      
+
+    - name: Display pvesm add result
+      debug:
+        msg: "{{ pve_out2.stdout_lines | default(['Storage already registered']) }}"
+      run_once: true
+
+    - name: Force activation and refresh on all nodes
+      shell: |
+        pvesm set Cluster-Templates --disable 0 || true
+        pvesm set Cluster-Models --disable 0 || true
+        # Kick the status daemon to clear the "?" icons
+        systemctl restart pvestatd
+      tags: refresh
+    
+    - name: Verify Cluster Storage Config
+      command: cat /etc/pve/storage.cfg
+      register: storage_cfg
+      run_once: true
+
+    - name: Show Current Storage Config
+      debug:
+        msg: "{{ storage_cfg.stdout_lines }}"
+
+    - name: Grant Terraform Token Access to New Storage
+      shell: |
+        pveum acl modify /storage/Cluster-Templates --token '{{token}}' --roles TerraformAdmin
+        pveum acl modify /storage/Cluster-Models --token '{{token}}' --roles TerraformAdmin
+        pveum acl modify /storage/{{lv_name}} --token '{{token}}' --roles TerraformAdmin
+      run_once: true
+      delegate_to: prodesk-node-02
