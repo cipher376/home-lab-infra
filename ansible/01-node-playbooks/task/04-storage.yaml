@@ -107,83 +107,6 @@
         - inventory_hostname == 'prodesk-node-02'
         - (model_nfs_config.changed or template_nfs_config.changed)
 
-#---------------------------------------------------------------------------------#
-# CREATE CLUSTER-MODEL-FAST LV AND MOUNT (OPTIONAL FOR MODEL TRAINING SPEEDUPS)
-#---------------------------------------------------------------------------------#
-    - name: Check if Cluster-Model-Fast LV exists
-      shell: "lvs /dev/{{ vg_name }}/{{ lv_name }}"
-      register: lv_check
-      failed_when: false
-      changed_when: false
-      delegate_to: legion-node-01
-      run_once: true # Crucial: Prevents other nodes from trying this
-    
-    - name: Create Logical Volume for Shared Storage
-      community.general.lvol:
-        vg: "{{ vg_name }}"
-        thinpool: "data"             # Add this line (verify name with 'lvs')
-        lv: "{{ lv_name }}"
-        size: "{{ lv_size }}"
-        # opts: "--thin"
-        state: present
-      delegate_to: 'legion-node-01'
-      run_once: true 
-      when: lv_check.rc == 0
-
-
-    - name: Create Filesystem (ext4) on the New Volume
-      community.general.filesystem:
-        fstype: ext4
-        dev: "/dev/{{ vg_name }}/{{ lv_name }}"
-      delegate_to: 'legion-node-01'
-      run_once: true 
-
-    - name: Create mount point directory on legion-node-01
-      shell: |
-        mkdir -p {{ mount_path_ssd }}
-        chmod 0777 {{ mount_path_ssd }}
-        chown root:root {{ mount_path_ssd }}
-        echo "directory created"
-      register: dir_create
-      changed_when: "'directory created' in dir_create.stdout"
-      delegate_to: "legion-node-01"
-      vars:
-        ansible_user: root
-      run_once: true
-      timeout: 10
-
-    - name: Mount the Volume and add to fstab
-      ansible.posix.mount:
-        path: "{{ mount_path_ssd }}"
-        src: "/dev/{{ vg_name }}/{{ lv_name }}"
-        fstype: ext4
-        opts: noatime,nodiratime
-        state: mounted
-      delegate_to: 'legion-node-01'
-      run_once: true 
-
-    - name: Configure NFS Exports
-      lineinfile:
-        path: /etc/exports
-        line: "{{ mount_path_ssd }} {{ network_range }}(rw,sync,no_subtree_check,no_root_squash,fsid=1)"
-        regexp: "^{{ mount_path_ssd }}"
-        state: present
-      register: lv_nfs_config
-      notify: Restart NFS Server
-      delegate_to: 'legion-node-01'
-      run_once: true 
-    
-    - name: Apply NFS changes
-      command: exportfs -ra
-      when: 
-        - inventory_hostname == 'legion-node-01'
-
-    - name: Ensure NFS is enabled and running
-      systemd:
-        name: nfs-kernel-server
-        enabled: yes
-        state: started
-    
 
 #---------------------------------------------------------------------------------#
 # REGISTER NEW NFS STORAGE IN PROXMOX AND GRANT ACCESS TO TERRAFORM TOKEN
@@ -248,6 +171,5 @@
       shell: |
         pveum acl modify /storage/Cluster-Templates --token '{{token}}' --roles TerraformAdmin
         pveum acl modify /storage/Cluster-Models --token '{{token}}' --roles TerraformAdmin
-        pveum acl modify /storage/{{lv_name}} --token '{{token}}' --roles TerraformAdmin
       run_once: true
       delegate_to: prodesk-node-02

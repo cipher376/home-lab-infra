@@ -57,3 +57,6 @@ This project is licensed under the MIT License. See the [LICENSE](LICENSE) file 
 
 ## Contributing
 Contributions are welcome! Please open an issue or submit a pull request for any improvements or fixes.
+
+# Commands:
+ansible-playbook site.yaml -e "@ansible/vars/secrets.yaml" -e "@ansible/hc-vault_keys.json" --vault-password-file ./ansible/.vault_key 

@@ -1,7 +1,38 @@
----
-- import_playbook: 01-node-playbooks/01-proxmox_bootstrap.yaml
-- import_playbook: 01-node-playbooks/02-create_ubuntu_templates.yaml
-- import_playbook: 01-node-playbooks/03-gpu_passthrough.yaml
+
+#--------------------------------------------------------------------------------#
+# Setup bare-metal nodes
+#--------------------------------------------------------------------------------#
+# - import_playbook: 01-node-playbooks/01-proxmox_bootstrap.yaml
+# - import_playbook: 01-node-playbooks/02-create_ubuntu_templates.yaml
+# - import_playbook: 01-node-playbooks/03-gpu_passthrough.yaml
+
+#--------------------------------------------------------------------------------#
+# Setup vm nodes with terraform
+#--------------------------------------------------------------------------------#
+# - name: Set up vm nodes with terraform
+#   hosts: localhost
+#   tasks:
+#     - name: Deploy vms
+#       community.general.terraform:
+#         project_path: "./../terraform/vm-deployment"
+#         state: present
+#         variables:
+#           proxmox_user: "{{ proxmox_user }}"
+#           proxmox_api_token_id: "{{ proxmox_api_token_id }}"
+#           proxmox_api_token_secret: "{{ proxmox_api_token_secret }}"
+
+# #--------------------------------------------------------------------------------#
+# # Bootstrap the vm with toools and drivers
+# #--------------------------------------------------------------------------------#
+# - import_playbook: 02-vm-playbooks/01-install-gpu-drivers.yaml
+# - import_playbook: 02-vm-playbooks/02-gitlab-config.yaml
+- import_playbook: 02-vm-playbooks/03-k3s-config.yaml
+# - import_playbook: 02-vm-playbooks/04-nfs-client-config.yaml
+# - import_playbook: 02-vm-playbooks/05-hc-vault.yaml
+# - import_playbook: 02-vm-playbooks/06-argocd.yaml
+# - import_playbook: 02-vm-playbooks/07-gitlab-runner.yaml
+
+
 
 - name: Final local setup
   hosts: localhost

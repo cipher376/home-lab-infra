@@ -92,30 +92,191 @@
       run_once: true
     
     
-    - name: Create ArgoCD Group Credential Template
-      kubernetes.core.k8s:
-        state: present
-        definition:
-          apiVersion: v1
-          kind: Secret
-          metadata:
-            name: gitlab-group-creds
-            namespace: argocd
-            labels:
-              # CRITICAL: 'repo-creds' makes this a template for the whole group
-              argocd.argoproj.io/secret-type: repo-creds
-          stringData:
-            type: git
-            # Match the base URL of your GitLab group
-            url: "http://{{gitlab_server}}/{{ gitlab_argo_group_name }}"
-            # For GitLab Group Tokens, the username can be anything (e.g., 'argocd-bot')
-            username: "argocd-bot"
-            # The 'glpat-...' token goes here
-            password: "{{ gitlab_argocd_token }}"  
-      become: true
-      delegate_to: k3s-master-venue
-      run_once: true
-      environment:
-        KUBECONFIG: /etc/rancher/k3s/k3s.yaml 
+# =============================================================================
+# Play 4: Configure initial policies for Argocd
+# =============================================================================
 
-   
+
+- name: Configure Vault for MLSecOps Lab
+  hosts: k3s_servers[0]
+  become: false
+  run_once: true
+  collections:
+    - community.hashi_vault
+  vars:
+    kube_config: "/etc/rancher/k3s/k3s.yaml"
+    k8s_ca_cert_cmd: >
+      kubectl get configmap kube-root-ca.crt -n kube-system
+      -o jsonpath='{.data.ca\.crt}'
+    k8s_sa_jwt_cmd: >
+      kubectl exec -n {{ vault_namespace }} vault-0 --
+      cat /var/run/secrets/kubernetes.io/serviceaccount/token
+    k8s_host_cmd: >
+      kubectl config view --raw
+      -o jsonpath='{.clusters[0].cluster.server}'
+    vault_addr: "http://vault.vault.svc.cluster.local:8200"
+    gitlab_url: "{{gitlab_url}}"
+    vault_token: "{{root_token}}"
+    vault_namespace: vault
+    environment:
+      KUBECONFIG: "{{ kube_config }}"  
+    
+  tasks:
+
+
+    # -------------------------------------------------------------------------
+    # ArgoCD read policy
+    # vault_policy removed in community.hashi_vault 7.x — use kubectl exec
+    # -------------------------------------------------------------------------
+    - name: Write ArgoCD read policy to temp file on vault-0
+      ansible.builtin.shell:
+        cmd: |
+          kubectl exec -n {{ vault_namespace }} vault-0 -- \
+            /bin/sh -c 'cat > /tmp/argocd-policy.hcl << '"'"'EOF'"'"'
+          path "secret/data/argocd/gitlab" {
+            capabilities = ["read"]
+          }
+          path "auth/token/renew-self" {
+            capabilities = ["update"]
+          }
+          path "auth/token/lookup-self" {
+            capabilities = ["read"]
+          }
+          EOF'
+      environment:
+        VAULT_TOKEN: "{{ vault_token }}"
+        KUBECONFIG: "{{ kube_config }}"
+      no_log: true
+
+    - name: Apply ArgoCD read policy from temp file
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - exec
+          - -n
+          - "{{ vault_namespace }}"
+          - vault-0
+          - --
+          - /bin/sh
+          - -c
+          - "VAULT_TOKEN={{ vault_token }}" 
+          - vault
+          - policy
+          - write
+          - argocd-read-policy
+          - /tmp/argocd-policy.hcl
+      environment:
+        VAULT_TOKEN: "{{ vault_token }}"
+        KUBECONFIG: "{{ kube_config }}"
+      no_log: true
+
+    - name: Remove policy temp file from vault-0
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - exec
+          - -n
+          - "{{ vault_namespace }}"
+          - vault-0
+          - --
+          - /bin/sh
+          - -c
+          - "VAULT_TOKEN={{ vault_token }}" 
+          - rm
+          - -f
+          - /tmp/argocd-policy.hcl
+      environment:
+        KUBECONFIG: "{{ kube_config }}"
+      changed_when: false
+
+    # -------------------------------------------------------------------------
+    # K8s auth role — binds argocd service accounts to the policy
+    # vault_kubernetes_auth_role removed in 7.x — use kubectl exec
+    # -------------------------------------------------------------------------
+    - name: Configure Kubernetes auth role for ArgoCD
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - exec
+          - -n
+          - "{{ vault_namespace }}"
+          - vault-0
+          - --
+          - /bin/sh
+          - -c
+          - "VAULT_TOKEN={{ vault_token }}" 
+          - vault
+          - write
+          - auth/kubernetes/role/argocd-role
+          - bound_service_account_names=argocd-repo-server,argocd-server,argocd-application-controller
+          - bound_service_account_namespaces=argocd
+          - policies=argocd-read-policy
+          - ttl=1h
+          - max_ttl=24h
+      environment:
+        VAULT_TOKEN: "{{ vault_token }}"
+        KUBECONFIG: "{{ kube_config }}"
+      no_log: true
+
+    # -------------------------------------------------------------------------
+    # Seed GitLab group token into Vault KV
+    # vault_kv2_write still exists in 7.x — keep using the collection module
+    # -------------------------------------------------------------------------
+    - name: Check if GitLab secret already exists
+      ansible.builtin.shell:
+        cmd: "kubectl exec -n {{ vault_namespace }} vault-0 -- /bin/sh -c 'VAULT_TOKEN={{ vault_token }} vault kv get secret/argocd/gitlab'"
+      register: vault_check
+      failed_when: false
+      changed_when: false
+      no_log: true
+
+    - name: Write GitLab group token into Vault KV
+      ansible.builtin.command:
+        argv:
+          - kubectl 
+          - exec 
+          - -n 
+          - "{{ vault_namespace }}"
+          - vault-0 
+          - -- 
+          - /bin/sh 
+          - -c 
+          - "VAULT_TOKEN={{ vault_token }}" 
+          - vault 
+          - kv 
+          - put 
+          - -mount=secret argocd/gitlab 
+          - "url={{ gitlab_url }}" 
+          - "username={{ gitlab_user }}"
+          - "password={{ gitlab_group_token }}" 
+          - "group={{ gitlab_group_name }}"
+      no_log: true
+
+    - name: Verify secret was written to Vault KV
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - exec
+          - -n
+          - "{{ vault_namespace }}"
+          - vault-0
+          - --
+          - /bin/sh
+          - -c
+          - "VAULT_TOKEN={{ vault_token }}" 
+          - vault
+          - kv
+          - get
+          - -mount=secret
+          - argocd/gitlab
+      environment:
+        VAULT_TOKEN: "{{ vault_token }}"
+        KUBECONFIG: "{{ kube_config }}"
+      register: kv_check
+      changed_when: false
+      failed_when: kv_check.rc != 0
+      no_log: true
+
+    - name: Confirm GitLab group token written
+      ansible.builtin.debug:
+        msg: "GitLab group token '{{ gitlab_group_name }}' seeded at secret/data/argocd/gitlab"

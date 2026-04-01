@@ -55,7 +55,7 @@ resource "proxmox_virtual_environment_vm" "k3s_master" {
   }
 
   memory {
-    dedicated = 6144
+    dedicated = 6142
   }
 
   network_device {
@@ -69,7 +69,7 @@ resource "proxmox_virtual_environment_vm" "k3s_master" {
     interface    = "scsi0"
     size         = 100
     file_format  = "raw"
-    cache        = "writethrough"
+    cache        = "writeback"
     discard      = "on"
     ssd          = true
   }

@@ -25,3 +25,11 @@ chmod 600 .vault_pass
 export TF_VAR_proxmox_api_token_id="your-actual-token-id-here"
 export TF_VAR_proxmox_api_token_secret="your-actual-token-uuid-here"
 
+
+#-------------------------------------------------------------------------------------------------
+#Purge kubernetes  On Master/Server Nodes
+#bash# Stop and uninstall k3s server
+
+
+#-------------------------------------------------------------------------------------------------
+#Purge On Worker/Agent Nodes bash

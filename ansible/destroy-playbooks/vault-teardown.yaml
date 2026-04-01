@@ -1,0 +1,48 @@
+---
+# =============================================================================
+# Teardown: Full Vault removal — Helm release + namespace + PVCs
+# =============================================================================
+- name: Remove HashiCorp Vault from K3s
+  hosts: k3s_servers
+  become: false
+  run_once: true
+  vars:
+    vault_namespace: vault
+    kube_config: "/etc/rancher/k3s/k3s.yaml"
+  environment:
+    KUBECONFIG: "{{ kube_config }}"
+
+  tasks:
+    - name: Uninstall Vault Helm release
+      kubernetes.core.helm:
+        name: vault
+        release_namespace: "{{ vault_namespace }}"
+        state: absent
+        wait: true
+      ignore_errors: true  # Safe — release may already be gone
+
+    - name: Delete all PVCs in vault namespace
+      ansible.builtin.shell:
+        cmd: kubectl delete pvc --all -n {{ vault_namespace }} --ignore-not-found=true
+      register: pvc_delete
+      changed_when: "'deleted' in pvc_delete.stdout"
+
+    - name: Delete vault namespace (cascades to any remaining resources)
+      kubernetes.core.k8s:
+        kind: Namespace
+        name: "{{ vault_namespace }}"
+        state: absent
+        wait: true
+        wait_timeout: 60
+      ignore_errors: true
+
+    - name: Confirm namespace is gone
+      ansible.builtin.command:
+        cmd: kubectl get namespace {{ vault_namespace }}
+      register: ns_check
+      failed_when: ns_check.rc == 0  # rc=1 means not found — that's what we want
+      changed_when: false
+
+    - name: Teardown complete
+      ansible.builtin.debug:
+        msg: "Vault fully removed. Namespace, Helm release, and PVCs are gone. Safe to retry."

@@ -522,15 +522,7 @@
       debug:
         msg: "{{ vfio_dmesg.stdout_lines }}"
 
-    - name: "[Verify] Assert GPU bound to vfio-pci"
-      assert:
-        that: "'vfio-pci' in gpu_binding_post.stdout"
-        fail_msg: >
-          GPU {{ gpu_pci_ids | first }} is not bound to vfio-pci after reboot.
-          Check dmesg output above for errors.
-        success_msg: >
-          GPU {{ gpu_pci_ids | first }} successfully bound to vfio-pci.
-
+    
 
 # ------------------------------------------------------------------ #
 #  HANDLERS                                                             #

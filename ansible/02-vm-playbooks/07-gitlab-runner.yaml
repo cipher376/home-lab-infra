@@ -23,8 +23,16 @@
           - "node-role.kubernetes.io/gitlab=true"
           - "app=gitlab"
     gitlab_runner_token: "{{gitlab_runner_token}}" #encrypted in vault
-    gitlab_url: "http://172.16.0.102" #Gitlab server IP
-  
+    gitlab_url: "{{gitlab_url}}" #Gitlab server IP
+    vault_namespace: vault
+    kube_config: "/etc/rancher/k3s/k3s.yaml"
+    vault_addr: "http://vault.vault.svc.cluster.local:8200"
+    vault_token: "{{ root_token }}"
+    runner_namespace: gitlab-runner
+    runner_sa: gitlab-runner
+    runner_role_name: gitlab-runner-role
+    runner_policy_name: gitlab-runner-policy
+    runner_secret_path: gitlab-runner/registration
   tasks:
     # ------------------------------------------------------------------ #
     #  GITLAB RUNNER SETUP                                                #
@@ -236,3 +244,186 @@
             helm uninstall gitlab-runner -n gitlab-runner
           ============================================
       run_once: true
+
+
+
+# =============================================================================
+# Play: Configure Vault for GitLab Runner
+# Assumes Play 1 (Load Vault Credentials) from configure_vault_argocd.yml
+# has already run and vault_credential_store is in memory.
+# Run this as a standalone play or append to configure_vault_argocd.yml
+# =============================================================================
+    - name: Write GitLab Runner policy to temp file on vault-0
+      ansible.builtin.shell:
+        cmd: |
+          kubectl exec -n {{ vault_namespace }} vault-0 -- \
+            /bin/sh -c 'cat > /tmp/runner-policy.hcl << '"'"'EOF'"'"'
+          path "secret/data/gitlab-runner/registration" {
+            capabilities = ["read"]
+          }
+          path "auth/token/renew-self" {
+            capabilities = ["update"]
+          }
+          path "auth/token/lookup-self" {
+            capabilities = ["read"]
+          }
+          EOF'
+      no_log: true
+      delegate_to: k3s-master-venue 
+      run_once: true
+
+    - name: Apply GitLab Runner policy
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - exec
+          - -n
+          - "{{ vault_namespace }}"
+          - vault-0
+          - --
+          - /bin/sh
+          - -c
+          - "VAULT_TOKEN={{ vault_token }}"
+          - vault 
+          - policy 
+          - write 
+          - "{{ runner_policy_name }}"
+          -  /tmp/runner-policy.hcl
+      no_log: true
+      delegate_to: k3s-master-venue 
+      run_once: true
+ 
+    - name: Remove policy temp file from vault-0
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - exec
+          - -n
+          - "{{ vault_namespace }}"
+          - vault-0
+          - --
+          - /bin/sh
+          - -c
+          - "VAULT_TOKEN={{ vault_token }}"
+          - rm
+          - -f
+          - /tmp/runner-policy.hcl
+      changed_when: false
+      delegate_to: k3s-master-venue 
+      run_once: true
+ 
+    # -------------------------------------------------------------------------
+    # K8s auth role
+    # -------------------------------------------------------------------------
+    - name: Create Kubernetes auth role for GitLab Runner
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - exec
+          - -n
+          - "{{ vault_namespace }}"
+          - vault-0
+          - --
+          - /bin/sh
+          - -c
+          - "VAULT_TOKEN={{ vault_token }}"
+          - vault 
+          - write 
+          - auth/kubernetes/role/{{ runner_role_name }}
+          - bound_service_account_names={{ runner_sa }}
+          - bound_service_account_namespaces={{ runner_namespace }}
+          - policies={{ runner_policy_name }}
+          - ttl=1h
+          - max_ttl=24h
+      no_log: true
+      delegate_to: k3s-master-venue 
+      run_once: true
+ 
+    # -------------------------------------------------------------------------
+    # Seed registration token
+    # -------------------------------------------------------------------------
+    - name: Check if GitLab secret already exists
+      ansible.builtin.shell:
+        cmd: "kubectl exec -n {{ vault_namespace }} vault-0 -- /bin/sh -c 'VAULT_TOKEN={{ vault_token }} vault kv get secret/{{runner_secret_path}}'"
+      register: vault_check
+      failed_when: false
+      changed_when: false
+      no_log: true
+
+    - name: Write GitLab group token into Vault KV
+      ansible.builtin.command:
+        argv:
+          - kubectl 
+          - exec 
+          - -n 
+          - "{{ vault_namespace }}"
+          - vault-0 
+          - -- 
+          - /bin/sh 
+          - -c 
+          - "VAULT_TOKEN={{ vault_token }}" 
+          - vault 
+          - kv 
+          - put 
+          - "-mount=secret {{runner_secret_path}}" 
+          - "url={{ gitlab_url }}" 
+          - "token={{gitlab_runner_token}}"
+      no_log: true
+      run_once: true
+
+
+
+    # -------------------------------------------------------------------------
+    # Verify
+    # -------------------------------------------------------------------------
+    - name: Verify GitLab Runner role was created
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - exec
+          - -n
+          - "{{ vault_namespace }}"
+          - vault-0
+          - --
+          - /bin/sh
+          - -c
+          - "VAULT_TOKEN={{ vault_token }}"
+          - vault 
+          - read 
+          - auth/kubernetes/role/{{ runner_role_name }}"
+      register: role_check
+      changed_when: false
+      failed_when: role_check.rc != 0
+      no_log: true
+      delegate_to: k3s-master-venue 
+      run_once: true
+ 
+    - name: Verify registration token was seeded in Vault KV
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - exec
+          - -n
+          - "{{ vault_namespace }}"
+          - vault-0
+          - --
+          - /bin/sh
+          - -c
+          - "VAULT_TOKEN={{ vault_token }}" 
+          - vault 
+          - kv 
+          - get 
+          - -mount=secret {{ runner_secret_path }}"
+      register: kv_check
+      changed_when: false
+      failed_when: kv_check.rc != 0
+      no_log: true
+      delegate_to: k3s-master-venue 
+      run_once: true
+ 
+    - name: Report GitLab Runner Vault configuration
+      ansible.builtin.debug:
+        msg:
+          - "Policy '{{ runner_policy_name }}': created"
+          - "Role '{{ runner_role_name }}': bound to {{ runner_sa }} in {{ runner_namespace }}"
+          - "Registration token seeded at: secret/data/{{ runner_secret_path }}"

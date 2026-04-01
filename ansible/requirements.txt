@@ -1,0 +1,12 @@
+# Core Ansible
+# NOTE: Python 3.14 is NOT supported — community.hashi_vault modules fail to
+# load on 3.14. Use Python 3.12 to build the venv:
+#   python3.12 -m venv ansible/.venv
+ansible==10.7.0
+ansible-core==2.17.10
+
+# Vault / K8s collection dependencies
+hvac>=2.1.0              # community.hashi_vault
+kubernetes>=29.0.0       # kubernetes.core
+PyYAML>=6.0
+jinja2>=3.1.0

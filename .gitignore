@@ -9,3 +9,5 @@ setup_terraform_env.sh
 # Ignore terraform state (we will move this to GitLab later)
 .terraform/
 terraform.tfstate*
+vars/*
+hc-vault_keys.json

@@ -51,15 +51,29 @@
       run_once: true
       delegate_to: "{{ groups['proxmox_master'][0] }}"
 
-    - name: Create local environment setup script
+    - name: Create and encrypt local environment setup script
       delegate_to: localhost
+      run_once: true
       become: false
-      copy:
-        content: |
-          #!/bin/bash
-          export TF_VAR_proxmox_api_token_id="{{ proxmox_api_user }}@{{ proxmox_api_realm }}!{{ proxmox_api_token_id }}"
-          export TF_VAR_proxmox_api_token_secret="{{ pve_secret_uuid }}"
-          export TF_VAR_proxmox_user="{{ proxmox_api_user }}"
-          echo "Terraform environment variables loaded for {{ proxmox_api_user }}"
-        dest: "./setup_terraform_env.sh"
-        mode: '0700'
+      block:
+        - name: Remove existing setup script if it exists
+          ansible.builtin.file:
+            path: "../vars/setup_terraform_env.sh"
+            state: absent
+
+       
+        - name: Generate the plain-text setup script
+          copy:
+            content: |
+              proxmox_api_token_id: "{{ proxmox_api_user }}@{{ proxmox_api_realm }}!{{ proxmox_api_token_id }}"
+              proxmox_api_token_secret: "{{ pve_secret_uuid }}"
+              proxmox_user: "{{ proxmox_api_user }}"
+            dest: "../vars/setup_terraform_env.sh"
+            mode: '0600'
+            
+        - name: Encrypt the file using Ansible Vault
+          command: >
+            ansible-vault encrypt "../vars/setup_terraform_env.sh"
+            --vault-password-file ../vars/.vault_key
+          
+          
