@@ -38,16 +38,16 @@ resource "helm_release" "argocd" {
   create_namespace = true
 
   # Disable the default LoadBalancer since Cilium Gateway will handle the entry
-  set {
-    name  = "server.service.type"
-    value = "ClusterIP"
-  }
+  # set {
+  #   name  = "server.service.type"
+  #   value = "ClusterIP"
+  # }
 
-  # Ensure ArgoCD knows it is behind a TLS-terminating proxy
-  set {
-    name  = "server.extraArgs"
-    value = "{--insecure}" # Gateway API handles TLS; ArgoCD stays plain HTTP internally
-  }
+  # # Ensure ArgoCD knows it is behind a TLS-terminating proxy
+  # set {
+  #   name  = "server.extraArgs"
+  #   value = "{--insecure}" # Gateway API handles TLS; ArgoCD stays plain HTTP internally
+  # }
 }
 
 resource "kubernetes_manifest" "argocd_route" {

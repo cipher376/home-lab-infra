@@ -1,3 +1,10 @@
+#--------------------------------------------------------------------------------#
+# Clean nodes
+#--------------------------------------------------------------------------------#
+- import_playbook: destroy-playbooks/destroy-ubuntu-template.yaml
+
+
+
 
 #--------------------------------------------------------------------------------#
 # Setup bare-metal nodes
@@ -11,32 +18,43 @@
 #--------------------------------------------------------------------------------#
 # - name: Set up vm nodes with terraform
 #   hosts: localhost
+#   vars_files: vars/setup_terraform_env.sh    
 #   tasks:
 #     - name: Deploy vms
 #       community.general.terraform:
 #         project_path: "./../terraform/vm-deployment"
 #         state: present
+#         force_init: yes
 #         variables:
 #           proxmox_user: "{{ proxmox_user }}"
 #           proxmox_api_token_id: "{{ proxmox_api_token_id }}"
 #           proxmox_api_token_secret: "{{ proxmox_api_token_secret }}"
+#           proxmox_api_url: "{{ proxmox_api_url }}"
+#           proxmox_ssh_user: "{{ proxmox_ssh_user }}"
+#           proxmox_ssh_vm_user: "{{ proxmox_ssh_vm_user }}"
+#           ssh_public_key: "{{ ssh_public_key }}"
+#           proxmox_ssh_private_key: "{{ proxmox_ssh_private_key }}"
+#           proxmox_master_ip: "{{ proxmox_master_ip }}"
+
 
 # #--------------------------------------------------------------------------------#
 # # Bootstrap the vm with toools and drivers
 # #--------------------------------------------------------------------------------#
 # - import_playbook: 02-vm-playbooks/01-install-gpu-drivers.yaml
 # - import_playbook: 02-vm-playbooks/02-gitlab-config.yaml
-- import_playbook: 02-vm-playbooks/03-k3s-config.yaml
-# - import_playbook: 02-vm-playbooks/04-nfs-client-config.yaml
-# - import_playbook: 02-vm-playbooks/05-hc-vault.yaml
-# - import_playbook: 02-vm-playbooks/06-argocd.yaml
-# - import_playbook: 02-vm-playbooks/07-gitlab-runner.yaml
+# - import_playbook: 02-vm-playbooks/03-k3s-config.yaml
+# - import_playbook: 02-vm-playbooks/04-nvidia-plugin.yaml
+# - import_playbook: 02-vm-playbooks/05-nfs-client-config.yaml
+# - import_playbook: 02-vm-playbooks/06-hc-vault.yaml
+# - import_playbook: 02-vm-playbooks/07-argocd.yaml
 
 
 
-- name: Final local setup
-  hosts: localhost
-  tasks:
-    - name: Remind user to source environment
-      debug:
-        msg: "Setup Complete! Run 'source ./setup_terraform_env.sh' to start using Terraform."
+# - name: Final local setup
+#   hosts: localhost
+#   tasks:
+#     - name: Last book run is complete.
+#       debug:
+#         msg: "Remember to verify the logs for warnings and errors. "
+
+

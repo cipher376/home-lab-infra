@@ -70,8 +70,8 @@
       file:
         path: "{{ model_path }}"
         state: directory
-        owner: root
-        group: root
+        owner: '1000'
+        group: '1000'
         mode: '0777'
       when: inventory_hostname == 'prodesk-node-02'
     - name: Export Model Registry via NFS
@@ -87,8 +87,8 @@
       file:
         path: "{{ template_path }}"
         state: directory
-        owner: root
-        group: root
+        owner: '1000'
+        group: '1000'
         mode: '0777'
       when: inventory_hostname == 'prodesk-node-02'
       

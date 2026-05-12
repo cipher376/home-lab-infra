@@ -30,8 +30,8 @@ locals {
 #  VM 100 — K3s Master (venue-node-03)                                 #
 # ------------------------------------------------------------------ #
 
-resource "proxmox_virtual_environment_vm" "k3s_master" {
-  name        = "k3s-master-venue"
+resource "proxmox_virtual_environment_vm" "k3s_master_00" {
+  name        = "k3s-master-00"
   node_name   = "venue-node-03"
   vm_id       = 100
   description = "K3s control plane node"
@@ -49,7 +49,7 @@ resource "proxmox_virtual_environment_vm" "k3s_master" {
   }
 
   cpu {
-    cores   = 3
+    cores   = 4
     sockets = 1
     type    = "x86-64-v2-AES"
   }
@@ -109,7 +109,7 @@ resource "proxmox_virtual_environment_vm" "k3s_master" {
 
     ip_config {
       ipv4 {
-        address = "172.16.0.103/24"
+        address = "172.16.0.50/24"
         gateway = "172.16.0.1"
       }
     }
@@ -130,15 +130,15 @@ resource "proxmox_virtual_environment_vm" "k3s_master" {
 }
 
 # ------------------------------------------------------------------ #
-#  VM 101 — K3s Worker (prodesk-node-02)                                 #
+#  VM 200 — K3s Worker (prodesk-node-02)                                 #
 # ------------------------------------------------------------------ #
 
-resource "proxmox_virtual_environment_vm" "k3s_worker_prodesk" {
-  name        = "k3s-worker-prodesk"
+resource "proxmox_virtual_environment_vm" "k3s_worker_00" {
+  name        = "k3s-worker-00"
   node_name   = "prodesk-node-02"
-  vm_id       = 101
+  vm_id       = 200
   description = "K3s worker node"
-  tags        = sort(["k3s", "worker", "ubuntu", "prodesk"])
+  tags        = sort(["k3s", "ubuntu", "prodesk"])
   machine     = "q35"
   bios        = "ovmf"
   on_boot     = true
@@ -155,11 +155,11 @@ resource "proxmox_virtual_environment_vm" "k3s_worker_prodesk" {
     cores   = 4
     sockets = 1
     type    = "x86-64-v2-AES"
-    units = 512
+    # units = 512
   }
 
   memory {
-    dedicated = 6144
+    dedicated = 8192
   }
 
   network_device {
@@ -213,7 +213,7 @@ resource "proxmox_virtual_environment_vm" "k3s_worker_prodesk" {
 
     ip_config {
       ipv4 {
-        address = "172.16.0.104/24"
+        address = "172.16.0.60/24"
         gateway = "172.16.0.1"
       }
     }
@@ -233,16 +233,16 @@ resource "proxmox_virtual_environment_vm" "k3s_worker_prodesk" {
   }
 }
 
-#------------------------------------------------------------------ #
-# VM 200 — ML GPU Worker (legion-node-01)                             #
-#------------------------------------------------------------------ #
 
-resource "proxmox_virtual_environment_vm" "ml_worker" {
-  name        = "ml-gpu-worker-legion"
+#------------------------------------------------------------------ #
+# VM 201 — k3s Worker (legion-node-01)                             #
+#------------------------------------------------------------------ #
+resource "proxmox_virtual_environment_vm" "k3s_worker_01" {
+  name        = "k3s-worker-01"
   node_name   = "legion-node-01"
-  vm_id       = 200
-  description = "ML GPU worker with GTX 1660 Ti Mobile passthrough"
-  tags        = sort(["ml", "gpu", "ubuntu"])
+  vm_id       = 201
+  description = "K3s worker"
+  tags        = sort(["k3s", "ubuntu", "legion"])
   machine     = "q35"
   bios        = "ovmf"
   on_boot     = true
@@ -257,7 +257,7 @@ resource "proxmox_virtual_environment_vm" "ml_worker" {
   }
 
   cpu {
-    cores   = 12
+    cores   = 8
     sockets = 1
     type    = "host"
     flags = [
@@ -267,8 +267,120 @@ resource "proxmox_virtual_environment_vm" "ml_worker" {
   }
 
   memory {
-    dedicated = 26244
-    floating  = 24576
+    dedicated = 14336
+    floating  = 12288
+  }
+
+
+  network_device {
+    bridge   = "vmbr0"
+    model    = "virtio"                     
+    firewall = false
+  }
+
+  disk {
+    datastore_id = "local-lvm"
+    interface    = "scsi0"
+    size         = 1000
+    file_format  = "raw"
+    cache        = "writethrough"
+    discard      = "on"
+    ssd          = true
+  }
+
+  efi_disk {
+    datastore_id      = "local-lvm"
+    file_format       = "raw"
+    type              = "4m"
+    pre_enrolled_keys = false
+  }
+
+  tpm_state {
+    datastore_id = "local-lvm"
+    version      = "v2.0"
+  }
+
+  agent {
+    enabled = true
+    trim    = true
+    type    = "virtio"
+  }
+
+  operating_system {
+    type = "l26"
+  }
+
+  serial_device {
+    device = "socket"
+  }
+
+  vga {
+    type = "serial0"
+  }
+
+  initialization {
+    datastore_id = "local-lvm"
+
+    ip_config {
+      ipv4 {
+        address = "172.16.0.61/24"
+        gateway = "172.16.0.1"
+      }
+    }
+
+    user_account {
+      keys     = [var.ssh_public_key]
+      username = "ubuntu"
+    }
+  }
+
+  lifecycle {
+    ignore_changes = [
+      disk,
+      initialization,
+      started,
+    ]
+  }
+}
+
+
+
+#------------------------------------------------------------------ #
+# VM 300 — ML GPU Worker (legion-node-01)                             #
+#------------------------------------------------------------------ #
+
+resource "proxmox_virtual_environment_vm" "k3s-gpu-worker-00" {
+  name        = "k3s-gpu-worker-01"
+  node_name   = "legion-node-01"
+  vm_id       = 300
+  description = "ML GPU worker with GTX 1660 Ti Mobile passthrough"
+  tags        = sort(["gpu", "k3s", "ubuntu", "legion"])
+  machine     = "q35"
+  bios        = "ovmf"
+  on_boot     = true
+  started     = true
+
+
+  clone {
+    vm_id     = local.template_legion
+    node_name = "legion-node-01"
+    full      = true
+    retries   = 3
+  }
+
+  cpu {
+    cores   = 8
+    sockets = 1
+    type    = "host"
+    flags = [
+      "+aes",
+      "+pdpe1gb",
+    ]
+  }
+
+  memory {
+    dedicated = 16384
+    floating  = 14336
   }
 
   hostpci {
@@ -330,7 +442,7 @@ resource "proxmox_virtual_environment_vm" "ml_worker" {
 
     ip_config {
       ipv4 {
-        address = "172.16.0.101/24"
+        address = "172.16.0.70/24"
         gateway = "172.16.0.1"
       }
     }
@@ -350,8 +462,11 @@ resource "proxmox_virtual_environment_vm" "ml_worker" {
   }
 }
 
+
+
+
 # ------------------------------------------------------------------ #
-#  VM 300 — GitLab Server (prodesk-node-02)                            #
+#  VM 400 — GitLab Server (prodesk-node-02)                            #
 # ------------------------------------------------------------------ #
 
 resource "proxmox_virtual_environment_file" "gitlab_cloud_config" {
@@ -386,9 +501,9 @@ resource "proxmox_virtual_environment_file" "gitlab_cloud_config" {
 resource "proxmox_virtual_environment_vm" "gitlab_server" {
   name        = "gitlab-server"
   node_name   = "prodesk-node-02"
-  vm_id       = 300
+  vm_id       = 400
   description = "GitLab server and model registry"
-  tags        = sort(["gitlab", "ubuntu"])
+  tags        = sort(["gitlab", "ubuntu", "prodesk-node-02"])
   machine     = "q35"
   bios        = "ovmf"
   on_boot     = true
@@ -474,7 +589,7 @@ resource "proxmox_virtual_environment_vm" "gitlab_server" {
 
     ip_config {
       ipv4 {
-        address = "172.16.0.102/24"
+        address = "172.16.0.30/24"
         gateway = "172.16.0.1"
       }
     }

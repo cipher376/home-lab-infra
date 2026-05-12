@@ -11,3 +11,5 @@ setup_terraform_env.sh
 terraform.tfstate*
 vars/*
 hc-vault_keys.json
+helper.sh
+proxmox/helper.sh
